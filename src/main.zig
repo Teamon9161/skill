@@ -7,6 +7,7 @@ const remove = @import("commands/remove.zig");
 const delete_cmd = @import("commands/delete.zig");
 const update = @import("commands/update.zig");
 const list = @import("commands/list.zig");
+const uninstall = @import("commands/uninstall.zig");
 
 pub fn main(init: std.process.Init) !u8 {
     var command = cli.parse(init) catch |err| {
@@ -34,6 +35,7 @@ pub fn main(init: std.process.Init) !u8 {
         .delete => |selector| delete_cmd.run(&ctx, selector),
         .update => |selector| update.run(&ctx, selector),
         .list => list.run(&ctx),
+        .uninstall => uninstall.run(&ctx),
     }) catch |err| {
         try printError(init.io, err);
         return 1;

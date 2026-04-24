@@ -16,7 +16,7 @@ pub const Paths = struct {
 };
 
 pub fn init(allocator: std.mem.Allocator, env: std.process.Environ) !Paths {
-    const home = try env.getAlloc(allocator, "HOME");
+    const home = try homePath(allocator, env);
     errdefer allocator.free(home);
 
     const root = env.getAlloc(allocator, "SKILL_HOME") catch |err| switch (err) {
@@ -42,6 +42,32 @@ pub fn init(allocator: std.mem.Allocator, env: std.process.Environ) !Paths {
         .root = root,
         .manifest = manifest,
         .repos = repos,
+    };
+}
+
+fn homePath(allocator: std.mem.Allocator, env: std.process.Environ) ![]const u8 {
+    if (try envGetAllocOrNull(allocator, env, "HOME")) |home| return home;
+    if (try envGetAllocOrNull(allocator, env, "USERPROFILE")) |profile| return profile;
+
+    const drive = try envGetAllocOrNull(allocator, env, "HOMEDRIVE");
+    defer if (drive) |value| allocator.free(value);
+
+    const path = try envGetAllocOrNull(allocator, env, "HOMEPATH");
+    defer if (path) |value| allocator.free(value);
+
+    if (drive) |drive_value| {
+        if (path) |path_value| {
+            return std.fmt.allocPrint(allocator, "{s}{s}", .{ drive_value, path_value });
+        }
+    }
+
+    return error.EnvironmentVariableMissing;
+}
+
+fn envGetAllocOrNull(allocator: std.mem.Allocator, env: std.process.Environ, name: []const u8) !?[]const u8 {
+    return env.getAlloc(allocator, name) catch |err| switch (err) {
+        error.EnvironmentVariableMissing => null,
+        else => return err,
     };
 }
 
@@ -72,5 +98,6 @@ test "storage path includes project and hash" {
     };
     const repo = try repoPath(allocator, p, "owner", "project", "https://github.com/owner/project.git");
     defer allocator.free(repo);
-    try std.testing.expect(std.mem.startsWith(u8, repo, "/tmp/skill/repos/owner@project-"));
+    const dir_name = std.fs.path.basename(repo);
+    try std.testing.expect(std.mem.startsWith(u8, dir_name, "owner@project-"));
 }

@@ -22,7 +22,11 @@ pub fn run(ctx: *Context, spec: source_spec.RepoSpec) !void {
     const repo_path = try paths.repoPath(ctx.allocator, ctx.paths, spec.owner, spec.project, spec.normalized);
     defer ctx.allocator.free(repo_path);
 
-    try git.clone(ctx.allocator, ctx.io, spec.normalized, repo_path);
+    if (try repoExists(ctx.io, repo_path)) {
+        try git.update(ctx.allocator, ctx.io, repo_path, "");
+    } else {
+        try git.clone(ctx.allocator, ctx.io, spec.normalized, repo_path);
+    }
     const layout = try detect.rootSkill(ctx.allocator, ctx.io, repo_path);
     defer layout.deinit(ctx.allocator);
 
@@ -42,6 +46,14 @@ pub fn run(ctx: *Context, spec: source_spec.RepoSpec) !void {
 
     try manifest.appendSkill(ctx.allocator, &ctx.manifest, skill);
     try ctx.save();
+}
+
+fn repoExists(io: std.Io, repo_path: []const u8) !bool {
+    std.Io.Dir.accessAbsolute(io, repo_path, .{}) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
+    return true;
 }
 
 fn updateExisting(ctx: *Context, index: usize) !void {

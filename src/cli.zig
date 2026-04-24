@@ -3,7 +3,7 @@ const clap = @import("clap");
 const source_spec = @import("core/source_spec.zig");
 const agents = @import("core/agents.zig");
 
-pub const CommandName = enum { help, add, remove, delete, update, list };
+pub const CommandName = enum { help, add, remove, delete, update, list, uninstall };
 
 pub const Command = union(enum) {
     help,
@@ -12,6 +12,7 @@ pub const Command = union(enum) {
     delete: source_spec.Selector,
     update: ?source_spec.Selector,
     list,
+    uninstall,
 
     pub fn deinit(self: Command, allocator: std.mem.Allocator) void {
         switch (self) {
@@ -65,6 +66,7 @@ pub fn parse(init: std.process.Init) !Command {
         .delete => try parseDelete(init.gpa, init.io, &iter),
         .update => try parseUpdate(init.gpa, init.io, &iter),
         .list => try parseList(init.gpa, init.io, &iter),
+        .uninstall => try parseUninstall(init.gpa, init.io, &iter),
     };
 }
 
@@ -157,19 +159,36 @@ fn parseList(allocator: std.mem.Allocator, io: std.Io, iter: *std.process.Args.I
     return .list;
 }
 
+fn parseUninstall(allocator: std.mem.Allocator, io: std.Io, iter: *std.process.Args.Iterator) !Command {
+    const params = comptime clap.parseParamsComptime(
+        \\-h, --help  Display help and exit.
+        \\
+    );
+    var diag = clap.Diagnostic{};
+    var res = clap.parseEx(clap.Help, &params, clap.parsers.default, iter, .{ .diagnostic = &diag, .allocator = allocator }) catch |err| {
+        try diag.reportToFile(io, .stderr(), err);
+        return err;
+    };
+    defer res.deinit();
+    if (res.args.help != 0) return .help;
+    return .uninstall;
+}
+
 pub fn printUsage(io: std.Io) !void {
     try std.Io.File.writeStreamingAll(.stderr(), io,
         \\Usage:
-        \\  skill add <owner>@<project>
-        \\  skill remove <project|owner@project> [--claude|--codex]
-        \\  skill delete <project|owner@project>
-        \\  skill update [project|owner@project]
+        \\  skill add @<owner>/<project>
+        \\  skill remove <project|@owner/project> [--claude|--codex]
+        \\  skill delete <project|@owner/project>
+        \\  skill update [project|@owner/project]
         \\  skill list
+        \\  skill uninstall
         \\
         \\Examples:
-        \\  skill add anthropics@my-skill
+        \\  skill add @anthropics/my-skill
         \\  skill remove my-skill --claude
-        \\  skill delete anthropics@my-skill
+        \\  skill delete @anthropics/my-skill
+        \\  skill uninstall
         \\
     );
 }

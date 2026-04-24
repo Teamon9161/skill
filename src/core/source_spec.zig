@@ -45,11 +45,9 @@ pub const Selector = union(enum) {
 };
 
 pub fn parseRepoSpec(allocator: std.mem.Allocator, input: []const u8) !RepoSpec {
-    const at_index = std.mem.indexOfScalar(u8, input, '@') orelse return SourceError.InvalidSpec;
-    if (std.mem.indexOfScalarPos(u8, input, at_index + 1, '@') != null) return SourceError.InvalidSpec;
-
-    const owner = input[0..at_index];
-    const project = input[at_index + 1 ..];
+    const parts = parseRepoParts(input) catch return SourceError.InvalidSpec;
+    const owner = parts.owner;
+    const project = parts.project;
     try validateOwner(owner);
     try validateProject(project);
 
@@ -67,10 +65,10 @@ pub fn parseRepoSpec(allocator: std.mem.Allocator, input: []const u8) !RepoSpec 
 }
 
 pub fn parseSelector(allocator: std.mem.Allocator, input: []const u8) !Selector {
-    if (std.mem.indexOfScalar(u8, input, '@')) |at_index| {
-        if (std.mem.indexOfScalarPos(u8, input, at_index + 1, '@') != null) return SourceError.InvalidSelector;
-        const owner = input[0..at_index];
-        const project = input[at_index + 1 ..];
+    if (std.mem.indexOfScalar(u8, input, '@') != null) {
+        const parts = parseRepoParts(input) catch return SourceError.InvalidSelector;
+        const owner = parts.owner;
+        const project = parts.project;
         try validateOwner(owner);
         try validateProject(project);
 
@@ -82,6 +80,29 @@ pub fn parseSelector(allocator: std.mem.Allocator, input: []const u8) !Selector 
 
     try validateProject(input);
     return .{ .project = try allocator.dupe(u8, input) };
+}
+
+const RepoParts = struct {
+    owner: []const u8,
+    project: []const u8,
+};
+
+fn parseRepoParts(input: []const u8) !RepoParts {
+    if (std.mem.startsWith(u8, input, "@")) {
+        if (std.mem.indexOfScalarPos(u8, input, 1, '@') != null) return SourceError.InvalidSpec;
+        const slash_index = std.mem.indexOfScalar(u8, input, '/') orelse return SourceError.InvalidSpec;
+        return .{
+            .owner = input[1..slash_index],
+            .project = input[slash_index + 1 ..],
+        };
+    }
+
+    const at_index = std.mem.indexOfScalar(u8, input, '@') orelse return SourceError.InvalidSpec;
+    if (std.mem.indexOfScalarPos(u8, input, at_index + 1, '@') != null) return SourceError.InvalidSpec;
+    return .{
+        .owner = input[0..at_index],
+        .project = input[at_index + 1 ..],
+    };
 }
 
 pub fn normalizedGithubUrl(allocator: std.mem.Allocator, owner: []const u8, project: []const u8) ![]const u8 {
@@ -117,6 +138,15 @@ pub fn sourceHashHex(input: []const u8) [12]u8 {
 
 test "parse repo spec owner project" {
     const allocator = std.testing.allocator;
+    const spec = try parseRepoSpec(allocator, "@owner/project");
+    defer spec.deinit(allocator);
+    try std.testing.expectEqualStrings("owner", spec.owner);
+    try std.testing.expectEqualStrings("project", spec.project);
+    try std.testing.expectEqualStrings("https://github.com/owner/project.git", spec.normalized);
+}
+
+test "parse legacy repo spec owner project" {
+    const allocator = std.testing.allocator;
     const spec = try parseRepoSpec(allocator, "owner@project");
     defer spec.deinit(allocator);
     try std.testing.expectEqualStrings("owner", spec.owner);
@@ -131,7 +161,7 @@ test "parse selector project and repo" {
     try std.testing.expect(one == .project);
     try std.testing.expectEqualStrings("project", one.project);
 
-    const two = try parseSelector(allocator, "owner@project");
+    const two = try parseSelector(allocator, "@owner/project");
     defer two.deinit(allocator);
     try std.testing.expect(two == .repo);
     try std.testing.expectEqualStrings("owner", two.repo.owner);

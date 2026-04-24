@@ -17,7 +17,7 @@ fn line(allocator: std.mem.Allocator, skill: anytype) ![]const u8 {
         try links_buf.appendSlice(allocator, link.agent);
     }
 
-    return std.fmt.allocPrint(allocator, "{s}@{s} {s} links=[{s}] path={s}\n", .{
+    return std.fmt.allocPrint(allocator, "@{s}/{s} {s} links=[{s}] path={s}\n", .{
         skill.owner,
         skill.project,
         skill.commit,
