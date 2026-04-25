@@ -6,6 +6,9 @@ pub fn build(b: *std.Build) void {
 
     const clap = b.dependency("clap", .{});
     const clap_module = clap.module("clap");
+    const options = b.addOptions();
+    options.addOption([]const u8, "version", "0.1.0");
+    options.addOption([]const u8, "default_config", @embedFile("config/defaults.toml"));
 
     const exe_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -13,6 +16,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     exe_module.addImport("clap", clap_module);
+    exe_module.addOptions("build_options", options);
 
     const exe = b.addExecutable(.{
         .name = "skill",
@@ -35,6 +39,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     test_module.addImport("clap", clap_module);
+    test_module.addOptions("build_options", options);
 
     const unit_tests = b.addTest(.{
         .root_module = test_module,

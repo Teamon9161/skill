@@ -6,12 +6,16 @@ pub const Paths = struct {
     root: []const u8,
     manifest: []const u8,
     repos: []const u8,
+    config: []const u8,
+    sources: []const u8,
 
     pub fn deinit(self: Paths, allocator: std.mem.Allocator) void {
         allocator.free(self.home);
         allocator.free(self.root);
         allocator.free(self.manifest);
         allocator.free(self.repos);
+        allocator.free(self.config);
+        allocator.free(self.sources);
     }
 };
 
@@ -36,12 +40,18 @@ pub fn init(allocator: std.mem.Allocator, env: std.process.Environ) !Paths {
     errdefer allocator.free(manifest);
     const repos = try std.fs.path.join(allocator, &.{ root, "repos" });
     errdefer allocator.free(repos);
+    const config = try std.fs.path.join(allocator, &.{ root, "config.toml" });
+    errdefer allocator.free(config);
+    const sources = try std.fs.path.join(allocator, &.{ root, "sources.toml" });
+    errdefer allocator.free(sources);
 
     return .{
         .home = home,
         .root = root,
         .manifest = manifest,
         .repos = repos,
+        .config = config,
+        .sources = sources,
     };
 }
 
@@ -82,6 +92,12 @@ pub fn child(allocator: std.mem.Allocator, parent: []const u8, name: []const u8)
     return std.fs.path.join(allocator, &.{ parent, name });
 }
 
+pub fn cwdAlloc(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const len = try std.Io.Dir.realPath(.cwd(), io, &buf);
+    return allocator.dupe(u8, buf[0..len]);
+}
+
 pub fn isInside(parent: []const u8, child_path: []const u8) bool {
     if (!std.mem.startsWith(u8, child_path, parent)) return false;
     if (child_path.len == parent.len) return false;
@@ -95,6 +111,8 @@ test "storage path includes project and hash" {
         .root = "/tmp/skill",
         .manifest = "/tmp/skill/manifest.json",
         .repos = "/tmp/skill/repos",
+        .config = "/tmp/skill/config.toml",
+        .sources = "/tmp/skill/sources.toml",
     };
     const repo = try repoPath(allocator, p, "owner", "project", "https://github.com/owner/project.git");
     defer allocator.free(repo);

@@ -7,6 +7,7 @@ const remove = @import("commands/remove.zig");
 const delete_cmd = @import("commands/delete.zig");
 const update = @import("commands/update.zig");
 const list = @import("commands/list.zig");
+const where_cmd = @import("commands/where.zig");
 const uninstall = @import("commands/uninstall.zig");
 
 pub fn main(init: std.process.Init) !u8 {
@@ -17,9 +18,16 @@ pub fn main(init: std.process.Init) !u8 {
     };
     defer command.deinit(init.gpa);
 
-    if (command == .help) {
-        try cli.printUsage(init.io);
-        return 0;
+    switch (command) {
+        .help => {
+            try cli.printUsage(init.io);
+            return 0;
+        },
+        .version => {
+            try cli.printVersion(init.io);
+            return 0;
+        },
+        else => {},
     }
 
     var ctx = Context.init(init.gpa, init.io, init.minimal.environ) catch |err| {
@@ -30,11 +38,13 @@ pub fn main(init: std.process.Init) !u8 {
 
     (switch (command) {
         .help => unreachable,
+        .version => unreachable,
         .add => |spec| add.run(&ctx, spec),
         .remove => |target| remove.run(&ctx, target),
         .delete => |selector| delete_cmd.run(&ctx, selector),
         .update => |selector| update.run(&ctx, selector),
         .list => list.run(&ctx),
+        .where => |query| where_cmd.run(&ctx, query),
         .uninstall => uninstall.run(&ctx),
     }) catch |err| {
         try printError(init.io, err);

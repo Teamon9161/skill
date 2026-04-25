@@ -1,0 +1,23 @@
+[sources.github]
+url = "https://github.com/{owner}/{repo}.git"
+
+[agents.claude]
+label = "Claude Code"
+dir = ".claude"
+skills = "skills"
+
+[agents.codex]
+label = "Codex"
+dir = ".codex"
+skills = "skills"
+
+[aliases]
+ham = "@kromahlusenii-ops/ham"
+lark = "@larksuite/cli"
+
+# User config can add aliases in $SKILL_HOME/config.toml:
+# [aliases]
+# ham = "@kromahlusenii-ops/ham"
+#
+# [aliases.local-demo]
+# value = "C:/path/to/demo-skill"

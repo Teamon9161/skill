@@ -12,8 +12,11 @@ pub const Manifest = struct {
 };
 
 pub const Skill = struct {
+    name: []const u8,
     owner: []const u8,
     project: []const u8,
+    source_label: []const u8 = "github",
+    source_path: []const u8 = "",
     source: []const u8,
     path: []const u8,
     branch: []const u8 = "",
@@ -21,8 +24,11 @@ pub const Skill = struct {
     links: []Link = &.{},
 
     pub fn deinit(self: Skill, allocator: std.mem.Allocator) void {
+        allocator.free(self.name);
         allocator.free(self.owner);
         allocator.free(self.project);
+        allocator.free(self.source_label);
+        allocator.free(self.source_path);
         allocator.free(self.source);
         allocator.free(self.path);
         allocator.free(self.branch);
@@ -50,8 +56,11 @@ const DiskManifest = struct {
 };
 
 const DiskSkill = struct {
+    name: ?[]const u8 = null,
     owner: []const u8,
     project: []const u8,
+    source_label: ?[]const u8 = null,
+    source_path: ?[]const u8 = null,
     source: []const u8,
     path: []const u8,
     branch: []const u8 = "",
@@ -106,7 +115,7 @@ pub fn save(allocator: std.mem.Allocator, io: std.Io, path: []const u8, value: M
 pub fn findIndex(value: Manifest, selector: source_spec.Selector) ?usize {
     for (value.skills, 0..) |skill, i| {
         switch (selector) {
-            .project => |project| if (std.mem.eql(u8, skill.project, project)) return i,
+            .project => |project| if (std.mem.eql(u8, skill.name, project) or std.mem.eql(u8, skill.project, project)) return i,
             .repo => |repo| if (std.mem.eql(u8, skill.owner, repo.owner) and std.mem.eql(u8, skill.project, repo.project)) return i,
         }
     }
@@ -115,9 +124,67 @@ pub fn findIndex(value: Manifest, selector: source_spec.Selector) ?usize {
 
 pub fn findProject(value: Manifest, project: []const u8) ?usize {
     for (value.skills, 0..) |skill, i| {
-        if (std.mem.eql(u8, skill.project, project)) return i;
+        if (std.mem.eql(u8, skill.name, project) or std.mem.eql(u8, skill.project, project)) return i;
     }
     return null;
+}
+
+pub fn findIdentity(
+    value: Manifest,
+    source_label: []const u8,
+    owner: []const u8,
+    project: []const u8,
+    source_path: []const u8,
+    name: []const u8,
+) ?usize {
+    for (value.skills, 0..) |skill, i| {
+        if (std.mem.eql(u8, skill.source_label, source_label) and
+            std.mem.eql(u8, skill.owner, owner) and
+            std.mem.eql(u8, skill.project, project) and
+            std.mem.eql(u8, skill.source_path, source_path) and
+            std.mem.eql(u8, skill.name, name))
+        {
+            return i;
+        }
+    }
+    return null;
+}
+
+pub fn matchSkills(allocator: std.mem.Allocator, value: Manifest, query: []const u8) ![]usize {
+    var out: std.ArrayList(usize) = .empty;
+    errdefer out.deinit(allocator);
+
+    const exact_project = hasExactProject(value, query);
+    for (value.skills, 0..) |skill, i| {
+        if (exact_project) {
+            if (std.mem.eql(u8, skill.project, query)) try out.append(allocator, i);
+            continue;
+        }
+
+        if (matches(skill.name, query) or matches(skill.project, query) or matches(skill.source, query)) {
+            try out.append(allocator, i);
+        }
+    }
+
+    return out.toOwnedSlice(allocator);
+}
+
+pub fn allSameProject(value: Manifest, indices: []const usize, query: []const u8) bool {
+    for (indices) |index| {
+        if (!std.mem.eql(u8, value.skills[index].project, query)) return false;
+    }
+    return indices.len != 0;
+}
+
+fn hasExactProject(value: Manifest, query: []const u8) bool {
+    for (value.skills) |skill| {
+        if (std.mem.eql(u8, skill.project, query)) return true;
+    }
+    return false;
+}
+
+fn matches(value: []const u8, query: []const u8) bool {
+    return std.mem.indexOf(u8, value, query) != null;
 }
 
 pub fn appendSkill(allocator: std.mem.Allocator, value: *Manifest, skill: Skill) !void {
@@ -138,6 +205,67 @@ pub fn replaceLinks(allocator: std.mem.Allocator, skill: *Skill, links: []Link) 
     skill.links = links;
 }
 
+pub fn replaceLinksForAgents(
+    allocator: std.mem.Allocator,
+    skill: *Skill,
+    agent_list: anytype,
+    links: []Link,
+) !void {
+    var kept: std.ArrayList(Link) = .empty;
+    errdefer kept.deinit(allocator);
+
+    for (skill.links) |link| {
+        if (agentSelected(agent_list, link.agent)) {
+            link.deinit(allocator);
+        } else {
+            try kept.append(allocator, link);
+        }
+    }
+    try kept.appendSlice(allocator, links);
+    const new_links = try kept.toOwnedSlice(allocator);
+    allocator.free(skill.links);
+    skill.links = new_links;
+}
+
+pub fn removeLinkPathFromOthers(
+    allocator: std.mem.Allocator,
+    value: *Manifest,
+    owner_index: usize,
+    agent: []const u8,
+    path: []const u8,
+) !void {
+    for (value.skills, 0..) |*skill, i| {
+        if (i == owner_index) continue;
+
+        var kept: std.ArrayList(Link) = .empty;
+        errdefer kept.deinit(allocator);
+        var changed = false;
+        for (skill.links) |link| {
+            if (std.mem.eql(u8, link.agent, agent) and std.mem.eql(u8, link.path, path)) {
+                link.deinit(allocator);
+                changed = true;
+            } else {
+                try kept.append(allocator, link);
+            }
+        }
+        if (!changed) {
+            kept.deinit(allocator);
+            continue;
+        }
+
+        const new_links = try kept.toOwnedSlice(allocator);
+        allocator.free(skill.links);
+        skill.links = new_links;
+    }
+}
+
+fn agentSelected(agent_list: anytype, id: []const u8) bool {
+    for (agent_list) |agent| {
+        if (std.mem.eql(u8, agent.id, id)) return true;
+    }
+    return false;
+}
+
 pub fn setGit(allocator: std.mem.Allocator, skill: *Skill, branch: []const u8, commit: []const u8) !void {
     allocator.free(skill.branch);
     allocator.free(skill.commit);
@@ -145,10 +273,22 @@ pub fn setGit(allocator: std.mem.Allocator, skill: *Skill, branch: []const u8, c
     skill.commit = try allocator.dupe(u8, commit);
 }
 
-pub fn newSkill(allocator: std.mem.Allocator, owner: []const u8, project: []const u8, source: []const u8, path: []const u8) !Skill {
+pub fn newSkill(
+    allocator: std.mem.Allocator,
+    name: []const u8,
+    owner: []const u8,
+    project: []const u8,
+    source_label: []const u8,
+    source_path: []const u8,
+    source: []const u8,
+    path: []const u8,
+) !Skill {
     return .{
+        .name = try allocator.dupe(u8, name),
         .owner = try allocator.dupe(u8, owner),
         .project = try allocator.dupe(u8, project),
+        .source_label = try allocator.dupe(u8, source_label),
+        .source_path = try allocator.dupe(u8, source_path),
         .source = try allocator.dupe(u8, source),
         .path = try allocator.dupe(u8, path),
         .branch = try allocator.dupe(u8, ""),
@@ -173,8 +313,11 @@ fn cloneSkill(allocator: std.mem.Allocator, disk: DiskSkill) !Skill {
     }
 
     return .{
+        .name = try allocator.dupe(u8, disk.name orelse disk.project),
         .owner = try allocator.dupe(u8, disk.owner),
         .project = try allocator.dupe(u8, disk.project),
+        .source_label = try allocator.dupe(u8, disk.source_label orelse "github"),
+        .source_path = try allocator.dupe(u8, disk.source_path orelse ""),
         .source = try allocator.dupe(u8, disk.source),
         .path = try allocator.dupe(u8, disk.path),
         .branch = try allocator.dupe(u8, disk.branch),
@@ -187,7 +330,8 @@ test "find project" {
     const allocator = std.testing.allocator;
     var m = Manifest{};
     defer m.deinit(allocator);
-    try appendSkill(allocator, &m, try newSkill(allocator, "owner", "project", "src", "/tmp/repo"));
+    try appendSkill(allocator, &m, try newSkill(allocator, "skill", "owner", "project", "github", "", "src", "/tmp/repo"));
     try std.testing.expectEqual(@as(?usize, 0), findProject(m, "project"));
+    try std.testing.expectEqual(@as(?usize, 0), findProject(m, "skill"));
     try std.testing.expectEqual(@as(?usize, null), findProject(m, "missing"));
 }
