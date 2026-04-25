@@ -2,3 +2,10 @@
 zig-out/
 zig-pkg/
 .claude/
+
+# HAM - AI agent scaffolding (local, do not commit)
+.ham/
+.memory/
+**/CLAUDE.md
+!CLAUDE.md
+# end HAM
