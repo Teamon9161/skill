@@ -51,8 +51,8 @@ pub const Target = struct {
     filter: agents.AgentFilter,
 };
 
-pub fn parse(init: std.process.Init) !Command {
-    var iter = try init.minimal.args.iterateAllocator(init.gpa);
+pub fn parse(init: std.process.Init, allocator: std.mem.Allocator) !Command {
+    var iter = try init.minimal.args.iterateAllocator(allocator);
     defer iter.deinit();
     _ = iter.next();
 
@@ -60,14 +60,14 @@ pub fn parse(init: std.process.Init) !Command {
 
     return switch (command) {
         .help => .help,
-        .add => try parseAdd(init.gpa, init.io, &iter),
-        .remove => try parseRemove(init.gpa, init.io, &iter),
-        .delete => try parseDelete(init.gpa, init.io, &iter),
-        .update => try parseUpdate(init.gpa, init.io, &iter),
-        .list => try parseList(init.gpa, init.io, &iter),
-        .where => try parseWhere(init.gpa, init.io, &iter),
-        .rebuild => try parseRebuild(init.gpa, init.io, &iter),
-        .uninstall => try parseUninstall(init.gpa, init.io, &iter),
+        .add => try parseAdd(allocator, init.io, &iter),
+        .remove => try parseRemove(allocator, init.io, &iter),
+        .delete => try parseDelete(allocator, init.io, &iter),
+        .update => try parseUpdate(allocator, init.io, &iter),
+        .list => try parseList(allocator, init.io, &iter),
+        .where => try parseWhere(allocator, init.io, &iter),
+        .rebuild => try parseRebuild(allocator, init.io, &iter),
+        .uninstall => try parseUninstall(allocator, init.io, &iter),
         .version => .version,
         .self => try parseSelf(init.io, &iter),
     };

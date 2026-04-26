@@ -13,12 +13,15 @@ const uninstall = @import("commands/uninstall.zig");
 const self_update = @import("commands/self_update.zig");
 
 pub fn main(init: std.process.Init) !u8 {
-    var command = cli.parse(init) catch |err| {
+    var arena = std.heap.ArenaAllocator.init(init.gpa);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const command = cli.parse(init, alloc) catch |err| {
         try printError(init.io, err);
         try cli.printUsage(init.io);
         return 1;
     };
-    defer command.deinit(init.gpa);
 
     switch (command) {
         .help => {
@@ -30,7 +33,7 @@ pub fn main(init: std.process.Init) !u8 {
             return 0;
         },
         .self => |sub| {
-            self_update.run(init.gpa, init.io, init.minimal.environ, sub) catch |err| {
+            self_update.run(alloc, init.io, init.minimal.environ, sub) catch |err| {
                 try printError(init.io, err);
                 return 1;
             };
@@ -39,11 +42,10 @@ pub fn main(init: std.process.Init) !u8 {
         else => {},
     }
 
-    var ctx = Context.init(init.gpa, init.io, init.minimal.environ) catch |err| {
+    var ctx = Context.init(alloc, init.io, init.minimal.environ) catch |err| {
         try printError(init.io, err);
         return 1;
     };
-    defer ctx.deinit();
 
     (switch (command) {
         .help => unreachable,
