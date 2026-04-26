@@ -20,21 +20,25 @@ pub fn run(ctx: *Context, target: cli.Target) !void {
     const indices = try manifest.matchSkills(ctx.allocator, ctx.manifest, target.query);
     defer ctx.allocator.free(indices);
 
-    if (indices.len == 0) {
-        try std.Io.File.writeStreamingAll(.stderr(), ctx.io, "warning: no installed skills match ");
+    const linked_indices = try filterLinkedMatches(ctx.allocator, ctx.manifest, indices, agent_list);
+    defer ctx.allocator.free(linked_indices);
+
+    if (linked_indices.len == 0) {
+        try std.Io.File.writeStreamingAll(.stderr(), ctx.io, "warning: no linked skills match ");
         try std.Io.File.writeStreamingAll(.stderr(), ctx.io, target.query);
         try std.Io.File.writeStreamingAll(.stderr(), ctx.io, "\n");
         return;
     }
 
-    const selected = try chooseMatches(ctx, indices, target.query);
+    const selected = try chooseMatches(ctx, linked_indices, target.query, agent_list);
     defer ctx.allocator.free(selected);
 
     var changed = false;
-    for (indices, 0..) |index, i| {
+    for (linked_indices, 0..) |index, i| {
         if (!selected[i]) continue;
         const skill = &ctx.manifest.skills[index];
         try links.removeRecordedForAgents(ctx.io, skill.links, agent_list);
+        try printRemovedLinks(ctx.io, skill.name, skill.links, agent_list);
         try dropRecordedLinks(ctx.allocator, skill, agent_list);
         changed = true;
     }
@@ -42,16 +46,42 @@ pub fn run(ctx: *Context, target: cli.Target) !void {
     if (changed) try ctx.save();
 }
 
-fn chooseMatches(ctx: *Context, indices: []const usize, query: []const u8) ![]bool {
+fn filterLinkedMatches(
+    allocator: std.mem.Allocator,
+    value: manifest.Manifest,
+    indices: []const usize,
+    agent_list: []const agents.Agent,
+) ![]usize {
+    var out: std.ArrayList(usize) = .empty;
+    errdefer out.deinit(allocator);
+
+    for (indices) |index| {
+        const skill = value.skills[index];
+        for (skill.links) |link| {
+            if (!matchesAgentPath(agent_list, link.agent, link.path)) continue;
+            try out.append(allocator, index);
+            break;
+        }
+    }
+
+    return out.toOwnedSlice(allocator);
+}
+
+fn chooseMatches(ctx: *Context, indices: []const usize, query: []const u8, agent_list: []const agents.Agent) ![]bool {
     const selected = try ctx.allocator.alloc(bool, indices.len);
     errdefer ctx.allocator.free(selected);
+    @memset(selected, false);
 
-    if (indices.len == 1 or manifest.allSameProject(ctx.manifest, indices, query)) {
+    if (indices.len == 1) {
+        selected[0] = try confirmSingleMatch(ctx, ctx.manifest.skills[indices[0]], agent_list);
+        return selected;
+    }
+
+    if (manifest.allSameProject(ctx.manifest, indices, query)) {
         @memset(selected, true);
         return selected;
     }
 
-    @memset(selected, false);
     try std.Io.File.writeStreamingAll(.stdout(), ctx.io, "Matching skills:\n");
     for (indices, 0..) |index, i| {
         const skill = ctx.manifest.skills[index];
@@ -87,6 +117,31 @@ fn chooseMatches(ctx: *Context, indices: []const usize, query: []const u8) ![]bo
     return selected;
 }
 
+fn confirmSingleMatch(ctx: *Context, skill: manifest.Skill, agent_list: []const agents.Agent) !bool {
+    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, "Remove ");
+    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, skill.name);
+    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, " from ");
+
+    var any = false;
+    for (skill.links) |link| {
+        if (!matchesAgentPath(agent_list, link.agent, link.path)) continue;
+        if (any) try std.Io.File.writeStreamingAll(.stdout(), ctx.io, ", ");
+        try std.Io.File.writeStreamingAll(.stdout(), ctx.io, link.agent);
+        any = true;
+    }
+    if (!any) try std.Io.File.writeStreamingAll(.stdout(), ctx.io, "selected agents");
+    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, "? [y/N] ");
+
+    var buf: [16]u8 = undefined;
+    const answer = try readPromptLine(ctx.io, &buf);
+    if (answer.len == 0) return false;
+    return switch (std.ascii.toLower(answer[0])) {
+        'y' => true,
+        'n' => false,
+        else => error.InvalidConfirmation,
+    };
+}
+
 fn readPromptLine(io: std.Io, buf: []u8) ![]const u8 {
     var len: usize = 0;
     while (true) {
@@ -100,6 +155,37 @@ fn readPromptLine(io: std.Io, buf: []u8) ![]const u8 {
         if (len == buf.len) return error.InputTooLong;
         buf[len] = byte[0];
         len += 1;
+    }
+}
+
+fn printRemovedLinks(
+    io: std.Io,
+    name: []const u8,
+    recorded_links: []const manifest.Link,
+    agent_list: []const agents.Agent,
+) !void {
+    var count: usize = 0;
+    for (recorded_links) |link| {
+        if (matchesAgentPath(agent_list, link.agent, link.path)) count += 1;
+    }
+
+    if (count == 0) {
+        try std.Io.File.writeStreamingAll(.stdout(), io, "No links changed for ");
+        try std.Io.File.writeStreamingAll(.stdout(), io, name);
+        try std.Io.File.writeStreamingAll(.stdout(), io, "\n");
+        return;
+    }
+
+    try std.Io.File.writeStreamingAll(.stdout(), io, "Removed ");
+    try std.Io.File.writeStreamingAll(.stdout(), io, name);
+    try std.Io.File.writeStreamingAll(.stdout(), io, " from:\n");
+    for (recorded_links) |link| {
+        if (!matchesAgentPath(agent_list, link.agent, link.path)) continue;
+        try std.Io.File.writeStreamingAll(.stdout(), io, "  - ");
+        try std.Io.File.writeStreamingAll(.stdout(), io, link.agent);
+        try std.Io.File.writeStreamingAll(.stdout(), io, ": ");
+        try std.Io.File.writeStreamingAll(.stdout(), io, link.path);
+        try std.Io.File.writeStreamingAll(.stdout(), io, "\n");
     }
 }
 
@@ -122,7 +208,7 @@ fn dropRecordedLinks(allocator: std.mem.Allocator, skill: *manifest.Skill, agent
 
 fn matchesAgentPath(agent_list: []const agents.Agent, agent_id: []const u8, path: []const u8) bool {
     for (agent_list) |agent| {
-        if (std.mem.eql(u8, agent.id, agent_id) and std.mem.startsWith(u8, path, agent.skills)) return true;
+        if (std.mem.eql(u8, agent.id, agent_id) and paths.isInside(agent.skills, path)) return true;
     }
     return false;
 }

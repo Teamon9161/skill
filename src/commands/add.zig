@@ -172,12 +172,33 @@ fn installLayout(
     ctx.allocator.free(skill.source);
     skill.source = try ctx.allocator.dupe(u8, info.source);
     try manifest.setGit(ctx.allocator, skill, info.branch, info.commit);
+    try printInstalledLinks(ctx.io, info.name, created_links);
     try manifest.replaceLinksForAgents(ctx.allocator, skill, agent_list, created_links);
     created_links_owned = false;
     ctx.allocator.free(created_links);
 
     for (skill.links) |link| {
         try manifest.removeLinkPathFromOthers(ctx.allocator, &ctx.manifest, index, link.agent, link.path);
+    }
+}
+
+fn printInstalledLinks(io: std.Io, name: []const u8, installed_links: []const manifest.Link) !void {
+    if (installed_links.len == 0) {
+        try std.Io.File.writeStreamingAll(.stdout(), io, "No links changed for ");
+        try std.Io.File.writeStreamingAll(.stdout(), io, name);
+        try std.Io.File.writeStreamingAll(.stdout(), io, "\n");
+        return;
+    }
+
+    try std.Io.File.writeStreamingAll(.stdout(), io, "Installed ");
+    try std.Io.File.writeStreamingAll(.stdout(), io, name);
+    try std.Io.File.writeStreamingAll(.stdout(), io, " for:\n");
+    for (installed_links) |link| {
+        try std.Io.File.writeStreamingAll(.stdout(), io, "  - ");
+        try std.Io.File.writeStreamingAll(.stdout(), io, link.agent);
+        try std.Io.File.writeStreamingAll(.stdout(), io, ": ");
+        try std.Io.File.writeStreamingAll(.stdout(), io, link.path);
+        try std.Io.File.writeStreamingAll(.stdout(), io, "\n");
     }
 }
 
@@ -294,10 +315,12 @@ fn pathTail(path: []const u8) []const u8 {
 }
 
 fn absolutePath(allocator: std.mem.Allocator, io: std.Io, input: []const u8) ![]const u8 {
-    if (std.fs.path.isAbsolute(input)) {
-        return std.Io.Dir.realPathFileAbsoluteAlloc(io, input, allocator);
-    }
-    return std.Io.Dir.realPathFileAlloc(.cwd(), io, input, allocator);
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const len = if (std.fs.path.isAbsolute(input))
+        try std.Io.Dir.realPathFileAbsolute(io, input, &buf)
+    else
+        try std.Io.Dir.realPathFile(.cwd(), io, input, &buf);
+    return allocator.dupe(u8, buf[0..len]);
 }
 
 fn freeLayouts(allocator: std.mem.Allocator, layouts: []detect.Layout) void {

@@ -21,6 +21,10 @@ skills = "skills"
 [aliases]
 ham = "@kromahlusenii-ops/ham"
 lark = "@larksuite/cli"
+duck-ext = "ficc@skills/duck-ext"
+dolphindb = "ficc@skills/dolphindb-claude"
+wiki = "ficc@skills/wiki"
+pybond = "ficc@skills/pybond"
 
 # User config can add aliases in $SKILL_HOME/config.toml:
 # [aliases]
