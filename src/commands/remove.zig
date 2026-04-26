@@ -30,13 +30,11 @@ pub fn run(ctx: *Context, target: cli.Target) !void {
     const selected = try chooseMatches(ctx, indices, target.query);
     defer ctx.allocator.free(selected);
 
-    if (!try confirmSelected(ctx, indices, selected)) return;
-
     var changed = false;
     for (indices, 0..) |index, i| {
         if (!selected[i]) continue;
         const skill = &ctx.manifest.skills[index];
-        try links.removeForAgents(ctx.allocator, ctx.io, agent_list, skill.name, skill.path);
+        try links.removeRecordedForAgents(ctx.io, skill.links, agent_list);
         try dropRecordedLinks(ctx.allocator, skill, agent_list);
         changed = true;
     }
@@ -65,19 +63,19 @@ fn chooseMatches(ctx: *Context, indices: []const usize, query: []const u8) ![]bo
         try std.Io.File.writeStreamingAll(.stdout(), ctx.io, skill.project);
         try std.Io.File.writeStreamingAll(.stdout(), ctx.io, "\n");
     }
-    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, "Choose numbers to remove, 'all', or Enter to cancel: ");
+    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, "Choose numbers to remove, Enter for all, or n to cancel: ");
 
     var buf: [256]u8 = undefined;
-    const n = std.Io.File.readStreaming(.stdin(), ctx.io, &.{buf[0..]}) catch |err| switch (err) {
-        error.EndOfStream => return selected,
-        else => return err,
-    };
-    const answer = std.mem.trim(u8, buf[0..n], " \t\r\n");
-    if (answer.len == 0) return selected;
+    const answer = try readPromptLine(ctx.io, &buf);
+    if (answer.len == 0) {
+        @memset(selected, true);
+        return selected;
+    }
     if (std.ascii.eqlIgnoreCase(answer, "all")) {
         @memset(selected, true);
         return selected;
     }
+    if (std.ascii.eqlIgnoreCase(answer, "n")) return selected;
 
     var tokens = std.mem.tokenizeAny(u8, answer, ", \t");
     while (tokens.next()) |token| {
@@ -89,37 +87,20 @@ fn chooseMatches(ctx: *Context, indices: []const usize, query: []const u8) ![]bo
     return selected;
 }
 
-fn confirmSelected(ctx: *Context, indices: []const usize, selected: []const bool) !bool {
-    var count: usize = 0;
-    for (selected) |enabled| {
-        if (enabled) count += 1;
+fn readPromptLine(io: std.Io, buf: []u8) ![]const u8 {
+    var len: usize = 0;
+    while (true) {
+        var byte: [1]u8 = undefined;
+        const n = std.Io.File.readStreaming(.stdin(), io, &.{byte[0..]}) catch |err| switch (err) {
+            error.EndOfStream => return std.mem.trim(u8, buf[0..len], " \t\r\n"),
+            else => return err,
+        };
+        if (n == 0) return std.mem.trim(u8, buf[0..len], " \t\r\n");
+        if (byte[0] == '\n') return std.mem.trim(u8, buf[0..len], " \t\r\n");
+        if (len == buf.len) return error.InputTooLong;
+        buf[len] = byte[0];
+        len += 1;
     }
-    if (count == 0) return false;
-
-    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, "Remove links for:\n");
-    for (indices, 0..) |index, i| {
-        if (!selected[i]) continue;
-        const skill = ctx.manifest.skills[index];
-        try std.Io.File.writeStreamingAll(.stdout(), ctx.io, "  - ");
-        try std.Io.File.writeStreamingAll(.stdout(), ctx.io, skill.name);
-        try std.Io.File.writeStreamingAll(.stdout(), ctx.io, " from ");
-        try std.Io.File.writeStreamingAll(.stdout(), ctx.io, skill.project);
-        try std.Io.File.writeStreamingAll(.stdout(), ctx.io, "\n");
-    }
-    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, "Confirm remove? [y/N] ");
-
-    var buf: [16]u8 = undefined;
-    const n = std.Io.File.readStreaming(.stdin(), ctx.io, &.{buf[0..]}) catch |err| switch (err) {
-        error.EndOfStream => return false,
-        else => return err,
-    };
-    const answer = std.mem.trim(u8, buf[0..n], " \t\r\n");
-    if (answer.len == 0) return false;
-    return switch (std.ascii.toLower(answer[0])) {
-        'y' => true,
-        'n' => false,
-        else => error.InvalidConfirmation,
-    };
 }
 
 fn dropRecordedLinks(allocator: std.mem.Allocator, skill: *manifest.Skill, agent_list: []const agents.Agent) !void {

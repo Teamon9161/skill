@@ -40,6 +40,17 @@ pub fn removeRecorded(io: std.Io, recorded: []const manifest.Link) !void {
     }
 }
 
+pub fn removeRecordedForAgents(
+    io: std.Io,
+    recorded: []const manifest.Link,
+    agent_list: []const agents.Agent,
+) !void {
+    for (recorded) |link| {
+        if (!linkBelongsToAnyAgent(link, agent_list)) continue;
+        try removeIfMatches(io, link.path, link.target);
+    }
+}
+
 pub fn removeRecordedForFilter(
     io: std.Io,
     recorded: []const manifest.Link,
@@ -180,12 +191,46 @@ fn removeIfMatches(io: std.Io, link_path: []const u8, target: []const u8) !void 
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const len = std.Io.Dir.readLinkAbsolute(io, link_path, &buf) catch |err| switch (err) {
         error.FileNotFound => return,
-        error.NotLink => return error.LinkConflict,
+        error.NotLink => {
+            try printConflict(io, "exists but is not a link", link_path, target, null);
+            return error.LinkConflict;
+        },
         else => return err,
     };
 
-    if (!std.mem.eql(u8, buf[0..len], target)) return error.LinkConflict;
+    if (!std.mem.eql(u8, buf[0..len], target)) {
+        try printConflict(io, "points to a different target", link_path, target, buf[0..len]);
+        return error.LinkConflict;
+    }
     try deleteLinkPath(io, link_path);
+}
+
+fn linkBelongsToAnyAgent(link: manifest.Link, agent_list: []const agents.Agent) bool {
+    for (agent_list) |agent| {
+        if (!std.mem.eql(u8, link.agent, agent.id)) continue;
+        if (paths.isInside(agent.skills, link.path)) return true;
+    }
+    return false;
+}
+
+fn printConflict(
+    io: std.Io,
+    reason: []const u8,
+    link_path: []const u8,
+    expected: []const u8,
+    actual: ?[]const u8,
+) !void {
+    try std.Io.File.writeStreamingAll(.stderr(), io, "link conflict: ");
+    try std.Io.File.writeStreamingAll(.stderr(), io, link_path);
+    try std.Io.File.writeStreamingAll(.stderr(), io, " ");
+    try std.Io.File.writeStreamingAll(.stderr(), io, reason);
+    try std.Io.File.writeStreamingAll(.stderr(), io, "\n  expected: ");
+    try std.Io.File.writeStreamingAll(.stderr(), io, expected);
+    if (actual) |value| {
+        try std.Io.File.writeStreamingAll(.stderr(), io, "\n  actual: ");
+        try std.Io.File.writeStreamingAll(.stderr(), io, value);
+    }
+    try std.Io.File.writeStreamingAll(.stderr(), io, "\n");
 }
 
 fn deleteLinkPath(io: std.Io, link_path: []const u8) !void {
@@ -193,4 +238,33 @@ fn deleteLinkPath(io: std.Io, link_path: []const u8) !void {
         error.IsDir => try std.Io.Dir.deleteDirAbsolute(io, link_path),
         else => return err,
     };
+}
+
+test "recorded link matching is scoped to selected agent directories" {
+    const sep = std.fs.path.sep_str;
+    const skills = "C:" ++ sep ++ "repo" ++ sep ++ ".codex" ++ sep ++ "skills";
+    const link = manifest.Link{
+        .agent = "codex",
+        .path = skills ++ sep ++ "lark-doc",
+        .target = "C:" ++ sep ++ "store" ++ sep ++ "lark-doc",
+    };
+    const wrong_agent = manifest.Link{
+        .agent = "claude",
+        .path = skills ++ sep ++ "lark-doc",
+        .target = "C:" ++ sep ++ "store" ++ sep ++ "lark-doc",
+    };
+    const sibling = manifest.Link{
+        .agent = "codex",
+        .path = skills ++ "-old" ++ sep ++ "lark-doc",
+        .target = "C:" ++ sep ++ "store" ++ sep ++ "lark-doc",
+    };
+    const agent_list = [_]agents.Agent{.{
+        .id = "codex",
+        .base = "C:" ++ sep ++ "repo" ++ sep ++ ".codex",
+        .skills = skills,
+    }};
+
+    try std.testing.expect(linkBelongsToAnyAgent(link, &agent_list));
+    try std.testing.expect(!linkBelongsToAnyAgent(wrong_agent, &agent_list));
+    try std.testing.expect(!linkBelongsToAnyAgent(sibling, &agent_list));
 }

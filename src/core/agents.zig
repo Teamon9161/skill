@@ -137,7 +137,10 @@ fn maybeAdd(
     const base = try agentBase(allocator, scopeRoot(home, cwd, filter.scope), def.dir);
     errdefer allocator.free(base);
     std.Io.Dir.accessAbsolute(io, base, .{}) catch |err| switch (err) {
-        error.FileNotFound => return,
+        error.FileNotFound => {
+            allocator.free(base);
+            return;
+        },
         else => return err,
     };
 
