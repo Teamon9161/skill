@@ -14,6 +14,30 @@ Additional agents and sources can be added through configuration.
 - Zig `0.16.0` or newer
 - Git, required for remote installs and updates
 
+## Install
+
+Windows:
+
+```powershell
+irm https://raw.githubusercontent.com/Teamon9161/skill/main/install.ps1 | iex
+```
+
+macOS and Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Teamon9161/skill/main/install.sh | sh
+```
+
+Install a specific version:
+
+```powershell
+$env:SKILL_VERSION = "0.1.0"; irm https://raw.githubusercontent.com/Teamon9161/skill/main/install.ps1 | iex
+```
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Teamon9161/skill/main/install.sh | SKILL_VERSION=0.1.0 sh
+```
+
 ## Build
 
 ```powershell
@@ -32,6 +56,17 @@ For development:
 zig build run -- help
 zig build test
 ```
+
+## Release
+
+Create and push a version tag:
+
+```powershell
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The release workflow builds Linux, macOS, and Windows binaries, uploads them to GitHub Releases, and publishes `checksums.txt`. The install scripts download the latest release by default.
 
 ## Usage
 

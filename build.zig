@@ -8,8 +8,10 @@ pub fn build(b: *std.Build) void {
     const clap_module = clap.module("clap");
     const toml_dep = b.dependency("toml", .{ .target = target, .optimize = optimize });
     const toml_module = toml_dep.module("toml");
+    const version = b.option([]const u8, "version", "Version string embedded in the binary") orelse "0.1.0";
+
     const options = b.addOptions();
-    options.addOption([]const u8, "version", "0.1.0");
+    options.addOption([]const u8, "version", version);
     options.addOption([]const u8, "default_config", @embedFile("config/defaults.toml"));
 
     const exe_module = b.createModule(.{

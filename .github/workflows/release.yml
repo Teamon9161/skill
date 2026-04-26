@@ -1,0 +1,106 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: x86_64-linux
+            target: x86_64-linux-musl
+            binary: skill
+            archive_ext: tar.gz
+          - name: aarch64-linux
+            target: aarch64-linux-musl
+            binary: skill
+            archive_ext: tar.gz
+          - name: x86_64-macos
+            target: x86_64-macos
+            binary: skill
+            archive_ext: tar.gz
+          - name: aarch64-macos
+            target: aarch64-macos
+            binary: skill
+            archive_ext: tar.gz
+          - name: x86_64-windows
+            target: x86_64-windows
+            binary: skill.exe
+            archive_ext: zip
+          - name: aarch64-windows
+            target: aarch64-windows
+            binary: skill.exe
+            archive_ext: zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Build
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          zig build -Doptimize=ReleaseSafe -Dtarget=${{ matrix.target }} -Dversion="$version"
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="skill-${{ matrix.name }}"
+          mkdir -p "dist/$archive"
+          cp "zig-out/bin/${{ matrix.binary }}" "dist/$archive/"
+
+          if [[ "${{ matrix.archive_ext }}" == "zip" ]]; then
+            (cd "dist/$archive" && zip -9 "../$archive.zip" "${{ matrix.binary }}")
+          else
+            tar -czf "dist/$archive.tar.gz" -C "dist/$archive" "${{ matrix.binary }}"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: skill-${{ matrix.name }}
+          path: dist/skill-${{ matrix.name }}.${{ matrix.archive_ext }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum skill-* > checksums.txt
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/skill-*
+            dist/checksums.txt
+          generate_release_notes: true
