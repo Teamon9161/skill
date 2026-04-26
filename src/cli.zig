@@ -88,14 +88,14 @@ fn parseCommandName(text: []const u8) ?CommandName {
 }
 
 fn parseAdd(allocator: std.mem.Allocator, io: std.Io, iter: *std.process.Args.Iterator) !Command {
-    const parsed = try parseDynamicAgentArgs(allocator, iter, "add");
+    _ = io;
+    const parsed = try parseDynamicAgentArgs(allocator, iter);
     errdefer parsed.deinit(allocator);
     if (parsed.help) {
         parsed.deinit(allocator);
         return .help;
     }
     const input = parsed.value orelse return error.MissingSpec;
-    _ = io;
     return .{ .add = .{
         .input = try allocator.dupe(u8, input),
         .filter = .{ .ids = parsed.agent_ids, .scope = parsed.scope },
@@ -103,14 +103,14 @@ fn parseAdd(allocator: std.mem.Allocator, io: std.Io, iter: *std.process.Args.It
 }
 
 fn parseRemove(allocator: std.mem.Allocator, io: std.Io, iter: *std.process.Args.Iterator) !Command {
-    const parsed = try parseDynamicAgentArgs(allocator, iter, "remove");
+    _ = io;
+    const parsed = try parseDynamicAgentArgs(allocator, iter);
     errdefer parsed.deinit(allocator);
     if (parsed.help) {
         parsed.deinit(allocator);
         return .help;
     }
     const query = parsed.value orelse return error.MissingSelector;
-    _ = io;
     return .{ .remove = .{
         .query = try allocator.dupe(u8, query),
         .filter = .{ .ids = parsed.agent_ids, .scope = parsed.scope },
@@ -132,7 +132,6 @@ const DynamicAgentArgs = struct {
 fn parseDynamicAgentArgs(
     allocator: std.mem.Allocator,
     iter: *std.process.Args.Iterator,
-    command_name: []const u8,
 ) !DynamicAgentArgs {
     var ids: std.ArrayList([]const u8) = .empty;
     errdefer {
@@ -166,7 +165,6 @@ fn parseDynamicAgentArgs(
         value = arg;
     }
 
-    _ = command_name;
     return .{ .value = value, .agent_ids = try ids.toOwnedSlice(allocator), .scope = scope };
 }
 

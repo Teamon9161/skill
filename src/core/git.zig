@@ -104,7 +104,7 @@ fn canAccess(allocator: std.mem.Allocator, io: std.Io, url: []const u8, timeout_
     var timeout_buf: [32]u8 = undefined;
     const timeout = try timeoutArg(&timeout_buf, timeout_seconds);
 
-    var result = run(allocator, io, &.{
+    var result = runQuiet(allocator, io, &.{
         "git",
         "-c",
         "http.lowSpeedLimit=1",
@@ -263,6 +263,14 @@ fn hasGitmodules(io: std.Io, repo: []const u8) !bool {
 }
 
 fn run(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, cwd: ?[]const u8) !RunResult {
+    return runImpl(allocator, io, argv, cwd, false);
+}
+
+fn runQuiet(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, cwd: ?[]const u8) !RunResult {
+    return runImpl(allocator, io, argv, cwd, true);
+}
+
+fn runImpl(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, cwd: ?[]const u8, quiet: bool) !RunResult {
     const child_cwd: std.process.Child.Cwd = if (cwd) |path| .{ .path = path } else .inherit;
     const result = try std.process.run(allocator, io, .{
         .argv = argv,
@@ -274,9 +282,15 @@ fn run(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8, cwd: 
     errdefer allocator.free(result.stdout);
     errdefer allocator.free(result.stderr);
 
-    switch (result.term) {
-        .exited => |code| if (code != 0) return error.GitFailed,
-        else => return error.GitFailed,
+    const failed = switch (result.term) {
+        .exited => |code| code != 0,
+        else => true,
+    };
+    if (failed) {
+        if (!quiet and result.stderr.len > 0) {
+            std.Io.File.writeStreamingAll(.stderr(), io, result.stderr) catch {};
+        }
+        return error.GitFailed;
     }
 
     return .{ .stdout = result.stdout, .stderr = result.stderr };

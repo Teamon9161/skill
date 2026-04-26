@@ -51,15 +51,13 @@ fn addRemote(ctx: *Context, spec: source_spec.RemoteSpec, agent_list: []const ag
     const repo_path = try paths.repoPath(ctx.allocator, ctx.paths, spec.owner, spec.repo, spec.normalized);
     defer ctx.allocator.free(repo_path);
 
-    if (try repoExists(ctx.io, repo_path)) {
-        const selected_source = try git.updateAny(ctx.allocator, ctx.io, repo_path, "", spec.urls, spec.connect_timeout_seconds);
-        defer ctx.allocator.free(selected_source);
-        try installRemoteLayouts(ctx, spec, repo_path, selected_source, agent_list);
-    } else {
-        const selected_source = try git.cloneAny(ctx.allocator, ctx.io, spec.urls, repo_path, spec.connect_timeout_seconds);
-        defer ctx.allocator.free(selected_source);
-        try installRemoteLayouts(ctx, spec, repo_path, selected_source, agent_list);
-    }
+    const selected_source = if (try repoExists(ctx.io, repo_path))
+        try git.updateAny(ctx.allocator, ctx.io, repo_path, "", spec.urls, spec.connect_timeout_seconds)
+    else
+        try git.cloneAny(ctx.allocator, ctx.io, spec.urls, repo_path, spec.connect_timeout_seconds);
+    defer ctx.allocator.free(selected_source);
+
+    try installRemoteLayouts(ctx, spec, repo_path, selected_source, agent_list);
 }
 
 fn installRemoteLayouts(
@@ -297,13 +295,9 @@ fn pathTail(path: []const u8) []const u8 {
 
 fn absolutePath(allocator: std.mem.Allocator, io: std.Io, input: []const u8) ![]const u8 {
     if (std.fs.path.isAbsolute(input)) {
-        const resolved = try std.Io.Dir.realPathFileAbsoluteAlloc(io, input, allocator);
-        defer allocator.free(resolved);
-        return allocator.dupe(u8, resolved);
+        return std.Io.Dir.realPathFileAbsoluteAlloc(io, input, allocator);
     }
-    const resolved = try std.Io.Dir.realPathFileAlloc(.cwd(), io, input, allocator);
-    defer allocator.free(resolved);
-    return allocator.dupe(u8, resolved);
+    return std.Io.Dir.realPathFileAlloc(.cwd(), io, input, allocator);
 }
 
 fn freeLayouts(allocator: std.mem.Allocator, layouts: []detect.Layout) void {

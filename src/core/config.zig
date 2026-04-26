@@ -260,14 +260,20 @@ fn mergeAgents(
             else => return error.InvalidConfig,
         };
 
+        const index = try ensureAgent(allocator, agent_list, id);
+        const agent = &agent_list.items[index];
+
         if (agent_table.get("label")) |value| {
-            try putAgentField(allocator, agent_list, id, "label", try expectString(value));
+            allocator.free(agent.label);
+            agent.label = try allocator.dupe(u8, try expectString(value));
         }
         if (agent_table.get("dir")) |value| {
-            try putAgentField(allocator, agent_list, id, "dir", try expectString(value));
+            allocator.free(agent.dir);
+            agent.dir = try allocator.dupe(u8, try expectString(value));
         }
         if (agent_table.get("skills")) |value| {
-            try putAgentField(allocator, agent_list, id, "skills", try expectString(value));
+            allocator.free(agent.skills);
+            agent.skills = try allocator.dupe(u8, try expectString(value));
         }
     }
 }
@@ -390,28 +396,6 @@ fn putAlias(
         .name = try allocator.dupe(u8, name),
         .value = try allocator.dupe(u8, value),
     });
-}
-
-fn putAgentField(
-    allocator: std.mem.Allocator,
-    list: *std.ArrayList(AgentDef),
-    id: []const u8,
-    key: []const u8,
-    value: []const u8,
-) !void {
-    const index = try ensureAgent(allocator, list, id);
-    const agent = &list.items[index];
-
-    if (std.mem.eql(u8, key, "label")) {
-        allocator.free(agent.label);
-        agent.label = try allocator.dupe(u8, value);
-    } else if (std.mem.eql(u8, key, "dir")) {
-        allocator.free(agent.dir);
-        agent.dir = try allocator.dupe(u8, value);
-    } else if (std.mem.eql(u8, key, "skills")) {
-        allocator.free(agent.skills);
-        agent.skills = try allocator.dupe(u8, value);
-    }
 }
 
 fn ensureAgent(allocator: std.mem.Allocator, list: *std.ArrayList(AgentDef), id: []const u8) !usize {
