@@ -1,7 +1,8 @@
 param(
     [string]$Repo = $env:SKILL_INSTALL_REPO,
     [string]$Version = $env:SKILL_VERSION,
-    [string]$InstallDir = $env:SKILL_INSTALL_DIR
+    [string]$InstallDir = $env:SKILL_INSTALL_DIR,
+    [string]$CurrentVersion = $env:SKILL_CURRENT_VERSION
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,6 +17,21 @@ if ([string]::IsNullOrWhiteSpace($Version)) {
 
 if ([string]::IsNullOrWhiteSpace($InstallDir)) {
     $InstallDir = Join-Path $env:LOCALAPPDATA "Programs\skill\bin"
+}
+
+if ($Version -eq "latest" -and -not [string]::IsNullOrWhiteSpace($CurrentVersion)) {
+    try {
+        $ApiUrl = "https://api.github.com/repos/$Repo/releases/latest"
+        $Release = Invoke-RestMethod -Uri $ApiUrl -Headers @{ "User-Agent" = "skill-updater" }
+        $LatestVersion = $Release.tag_name.TrimStart("v")
+        if ([Version]$CurrentVersion -ge [Version]$LatestVersion) {
+            Write-Host "skill $CurrentVersion is already up to date"
+            exit 0
+        }
+        Write-Host "Updating skill $CurrentVersion -> $LatestVersion..."
+    } catch {
+        Write-Host "Warning: could not check latest version, proceeding with update..."
+    }
 }
 
 $processor = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
@@ -71,7 +87,12 @@ try {
         throw "archive did not contain skill.exe"
     }
 
-    Copy-Item -Path $BinaryPath -Destination (Join-Path $InstallDir "skill.exe") -Force
+    $Target = Join-Path $InstallDir "skill.exe"
+    $OldExe = Join-Path $InstallDir "skill.exe.old"
+    if (Test-Path $OldExe) { Remove-Item $OldExe -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $Target) { Rename-Item -Path $Target -NewName "skill.exe.old" -Force }
+    Copy-Item -Path $BinaryPath -Destination $Target -Force
+    Remove-Item $OldExe -Force -ErrorAction SilentlyContinue
 
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
     $PathParts = @()

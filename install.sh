@@ -4,6 +4,7 @@ set -eu
 repo="${SKILL_INSTALL_REPO:-Teamon9161/skill}"
 version="${SKILL_VERSION:-latest}"
 install_dir="${SKILL_INSTALL_DIR:-$HOME/.local/bin}"
+current_version="${1:-${SKILL_CURRENT_VERSION:-}}"
 
 need_cmd() {
     if ! command -v "$1" >/dev/null 2>&1; then
@@ -56,6 +57,26 @@ case "$(uname -m)" in
         exit 1
         ;;
 esac
+
+if [ "$version" = "latest" ] && [ -n "$current_version" ]; then
+    latest_tag=""
+    if command -v curl >/dev/null 2>&1; then
+        latest_tag=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" \
+            -H "User-Agent: skill-updater" \
+            | grep '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' | head -1) || true
+    elif command -v wget >/dev/null 2>&1; then
+        latest_tag=$(wget -qO- "https://api.github.com/repos/$repo/releases/latest" \
+            | grep '"tag_name"' | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/' | head -1) || true
+    fi
+    if [ -n "$latest_tag" ]; then
+        latest_version="${latest_tag#v}"
+        if [ "$current_version" = "$latest_version" ]; then
+            echo "skill $current_version is already up to date"
+            exit 0
+        fi
+        echo "Updating skill $current_version -> $latest_version..."
+    fi
+fi
 
 archive="skill-$arch-$os.tar.gz"
 if [ "$version" = "latest" ]; then

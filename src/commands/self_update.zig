@@ -20,9 +20,10 @@ fn runUpdate(allocator: std.mem.Allocator, io: std.Io, environ: std.process.Envi
     if (builtin.os.tag == .windows) {
         try exec(allocator, io, &.{
             "powershell.exe", "-ExecutionPolicy", "Bypass", "-NonInteractive", "-File", tmp_path,
+            "-CurrentVersion", build_options.version,
         });
     } else {
-        try exec(allocator, io, &.{ "sh", tmp_path });
+        try exec(allocator, io, &.{ "sh", tmp_path, build_options.version });
     }
 }
 
