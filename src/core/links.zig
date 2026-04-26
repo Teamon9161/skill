@@ -91,7 +91,7 @@ fn ensureLink(
             return true;
         },
         error.NotLink => {
-            if (!options.prompt_conflicts) return error.LinkConflict;
+            if (!options.prompt_conflicts) return false;
             if (!try confirmReplace(io, agent_id, link_path)) return false;
             try deleteExisting(io, link_path);
             try createDirectoryLink(allocator, io, link_path, target);
@@ -101,7 +101,7 @@ fn ensureLink(
     };
 
     if (std.mem.eql(u8, buf[0..len], target)) return true;
-    if (!options.prompt_conflicts) return error.LinkConflict;
+    if (!options.prompt_conflicts) return false;
     if (!try confirmReplace(io, agent_id, link_path)) return false;
     try deleteLinkPath(io, link_path);
     try createDirectoryLink(allocator, io, link_path, target);

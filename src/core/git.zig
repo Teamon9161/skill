@@ -35,13 +35,13 @@ pub fn cloneAny(
     return error.GitFailed;
 }
 
-pub fn update(allocator: std.mem.Allocator, io: std.Io, repo: []const u8, branch: []const u8) !void {
+pub fn update(allocator: std.mem.Allocator, io: std.Io, repo: []const u8, branch: []const u8, timeout_seconds: u32) !void {
     const ref = if (branch.len == 0) "HEAD" else branch;
     var fetch = try run(allocator, io, &.{ "git", "fetch", "--depth=1", "origin", ref }, repo);
     fetch.deinit(allocator);
     var reset = try run(allocator, io, &.{ "git", "reset", "--hard", "FETCH_HEAD" }, repo);
     reset.deinit(allocator);
-    try updateSubmodules(allocator, io, repo, 0, "", &.{});
+    try updateSubmodules(allocator, io, repo, timeout_seconds, "", &.{});
 }
 
 pub fn updateAny(
@@ -53,7 +53,7 @@ pub fn updateAny(
     timeout_seconds: u32,
 ) ![]const u8 {
     if (urls.len == 0) {
-        try update(allocator, io, repo, branch);
+        try update(allocator, io, repo, branch, timeout_seconds);
         return allocator.dupe(u8, "");
     }
 
@@ -76,6 +76,12 @@ pub fn updateAny(
     }
 
     return error.GitFailed;
+}
+
+pub fn remoteUrl(allocator: std.mem.Allocator, io: std.Io, repo: []const u8) ![]const u8 {
+    var result = try run(allocator, io, &.{ "git", "remote", "get-url", "origin" }, repo);
+    defer result.deinit(allocator);
+    return trimDup(allocator, result.stdout);
 }
 
 pub fn currentBranch(allocator: std.mem.Allocator, io: std.Io, repo: []const u8) ![]const u8 {

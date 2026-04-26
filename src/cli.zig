@@ -6,18 +6,22 @@ const agents = @import("core/agents.zig");
 
 pub const version = build_options.version;
 
-pub const CommandName = enum { help, add, remove, delete, update, list, where, uninstall, version };
+pub const CommandName = enum { help, add, remove, delete, update, list, where, rebuild, uninstall, version, self };
+
+pub const SelfCommand = enum { update };
 
 pub const Command = union(enum) {
     help,
     add: AddTarget,
     remove: Target,
-    delete: source_spec.Selector,
+    delete: []const u8,
     update: ?source_spec.Selector,
     list,
     where: []const u8,
+    rebuild,
     uninstall,
     version,
+    self: SelfCommand,
 
     pub fn deinit(self: Command, allocator: std.mem.Allocator) void {
         switch (self) {
@@ -30,7 +34,7 @@ pub const Command = union(enum) {
                 target.filter.deinit(allocator);
             },
             .where => |query| allocator.free(query),
-            .delete => |selector| selector.deinit(allocator),
+            .delete => |query| allocator.free(query),
             .update => |maybe| if (maybe) |selector| selector.deinit(allocator),
             else => {},
         }
@@ -62,8 +66,10 @@ pub fn parse(init: std.process.Init) !Command {
         .update => try parseUpdate(init.gpa, init.io, &iter),
         .list => try parseList(init.gpa, init.io, &iter),
         .where => try parseWhere(init.gpa, init.io, &iter),
+        .rebuild => try parseRebuild(init.gpa, init.io, &iter),
         .uninstall => try parseUninstall(init.gpa, init.io, &iter),
         .version => .version,
+        .self => try parseSelf(init.io, &iter),
     };
 }
 
@@ -79,11 +85,13 @@ fn parseCommandName(text: []const u8) ?CommandName {
     if (std.mem.eql(u8, text, "-U") or std.mem.eql(u8, text, "update")) return .update;
     if (std.mem.eql(u8, text, "list")) return .list;
     if (std.mem.eql(u8, text, "where")) return .where;
+    if (std.mem.eql(u8, text, "rebuild")) return .rebuild;
     if (std.mem.eql(u8, text, "-V") or std.mem.eql(u8, text, "--version") or
         std.mem.eql(u8, text, "version"))
     {
         return .version;
     }
+    if (std.mem.eql(u8, text, "self")) return .self;
     return std.meta.stringToEnum(CommandName, text);
 }
 
@@ -188,8 +196,8 @@ fn parseDelete(allocator: std.mem.Allocator, io: std.Io, iter: *std.process.Args
     };
     defer res.deinit();
     if (res.args.help != 0) return .help;
-    const selector_text = res.positionals[0] orelse return error.MissingSelector;
-    return .{ .delete = try source_spec.parseSelector(allocator, selector_text) };
+    const query = res.positionals[0] orelse return error.MissingSelector;
+    return .{ .delete = try allocator.dupe(u8, query) };
 }
 
 fn parseUpdate(allocator: std.mem.Allocator, io: std.Io, iter: *std.process.Args.Iterator) !Command {
@@ -242,6 +250,38 @@ fn parseWhere(allocator: std.mem.Allocator, io: std.Io, iter: *std.process.Args.
     return .{ .where = try allocator.dupe(u8, query) };
 }
 
+fn parseSelf(io: std.Io, iter: *std.process.Args.Iterator) !Command {
+    const sub = iter.next() orelse {
+        try printSelfUsage(io);
+        return error.MissingSubcommand;
+    };
+    if (std.mem.eql(u8, sub, "update")) return .{ .self = .update };
+    return error.InvalidCommand;
+}
+
+fn printSelfUsage(io: std.Io) !void {
+    try std.Io.File.writeStreamingAll(.stderr(), io,
+        \\Usage:
+        \\  skill self update
+        \\
+    );
+}
+
+fn parseRebuild(allocator: std.mem.Allocator, io: std.Io, iter: *std.process.Args.Iterator) !Command {
+    const params = comptime clap.parseParamsComptime(
+        \\-h, --help  Display help and exit.
+        \\
+    );
+    var diag = clap.Diagnostic{};
+    var res = clap.parseEx(clap.Help, &params, clap.parsers.default, iter, .{ .diagnostic = &diag, .allocator = allocator }) catch |err| {
+        try diag.reportToFile(io, .stderr(), err);
+        return err;
+    };
+    defer res.deinit();
+    if (res.args.help != 0) return .help;
+    return .rebuild;
+}
+
 fn parseUninstall(allocator: std.mem.Allocator, io: std.Io, iter: *std.process.Args.Iterator) !Command {
     const params = comptime clap.parseParamsComptime(
         \\-h, --help  Display help and exit.
@@ -262,11 +302,13 @@ pub fn printUsage(io: std.Io) !void {
         \\Usage:
         \\  skill add|-A [-l|--local] [--<agent>|--agent <id>] <source|path>
         \\  skill remove|-R [-l|--local] <query> [--<agent>|--agent <id>]
-        \\  skill delete|-D <project|@owner/project>
+        \\  skill delete|-D <query>
         \\  skill update|-U [project|@owner/project]
         \\  skill list
         \\  skill where <query>
+        \\  skill rebuild
         \\  skill uninstall
+        \\  skill self update
         \\  skill version|-V
         \\  skill help|-H
         \\

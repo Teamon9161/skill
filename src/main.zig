@@ -8,7 +8,9 @@ const delete_cmd = @import("commands/delete.zig");
 const update = @import("commands/update.zig");
 const list = @import("commands/list.zig");
 const where_cmd = @import("commands/where.zig");
+const rebuild = @import("commands/rebuild.zig");
 const uninstall = @import("commands/uninstall.zig");
+const self_update = @import("commands/self_update.zig");
 
 pub fn main(init: std.process.Init) !u8 {
     var command = cli.parse(init) catch |err| {
@@ -27,6 +29,13 @@ pub fn main(init: std.process.Init) !u8 {
             try cli.printVersion(init.io);
             return 0;
         },
+        .self => |sub| {
+            self_update.run(init.gpa, init.io, init.minimal.environ, sub) catch |err| {
+                try printError(init.io, err);
+                return 1;
+            };
+            return 0;
+        },
         else => {},
     }
 
@@ -39,12 +48,14 @@ pub fn main(init: std.process.Init) !u8 {
     (switch (command) {
         .help => unreachable,
         .version => unreachable,
+        .self => unreachable,
         .add => |spec| add.run(&ctx, spec),
         .remove => |target| remove.run(&ctx, target),
         .delete => |selector| delete_cmd.run(&ctx, selector),
         .update => |selector| update.run(&ctx, selector),
         .list => list.run(&ctx),
         .where => |query| where_cmd.run(&ctx, query),
+        .rebuild => rebuild.run(&ctx),
         .uninstall => uninstall.run(&ctx),
     }) catch |err| {
         try printError(init.io, err);

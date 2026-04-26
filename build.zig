@@ -13,6 +13,8 @@ pub fn build(b: *std.Build) void {
     const options = b.addOptions();
     options.addOption([]const u8, "version", version);
     options.addOption([]const u8, "default_config", @embedFile("config/defaults.toml"));
+    options.addOption([]const u8, "install_sh", @embedFile("install.sh"));
+    options.addOption([]const u8, "install_ps1", @embedFile("install.ps1"));
 
     const exe_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
