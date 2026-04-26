@@ -1,6 +1,13 @@
 [sources.github]
 url = "https://github.com/{owner}/{repo}.git"
 
+[sources.ficc]
+timeout = 1
+urls = [
+    "http://92.168.66.38:10112/{owner}/{repo}.git",
+    "http://192.168.66.38:10112/{owner}/{repo}.git",
+]
+
 [agents.claude]
 label = "Claude Code"
 dir = ".claude"
