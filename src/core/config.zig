@@ -1,13 +1,17 @@
 const std = @import("std");
 const build_options = @import("build_options");
+const toml = @import("toml");
+
+pub const default_connect_timeout_seconds: u32 = 8;
 
 pub const Source = struct {
     label: []const u8,
-    url_template: []const u8,
+    url_templates: []const []const u8,
+    connect_timeout_seconds: u32 = default_connect_timeout_seconds,
 
     pub fn deinit(self: Source, allocator: std.mem.Allocator) void {
         allocator.free(self.label);
-        allocator.free(self.url_template);
+        freeStringList(allocator, self.url_templates);
     }
 };
 
@@ -48,13 +52,6 @@ pub const Config = struct {
         for (self.aliases) |alias| alias.deinit(allocator);
         allocator.free(self.aliases);
     }
-};
-
-const ParseState = struct {
-    current_kind: Kind = .none,
-    current_id: []const u8 = "",
-
-    const Kind = enum { none, source, agent, aliases, alias };
 };
 
 pub fn load(
@@ -106,10 +103,47 @@ pub fn expandUrl(
     owner: []const u8,
     repo: []const u8,
 ) ![]const u8 {
+    if (source.url_templates.len == 0) return error.InvalidConfig;
+    return expandUrlTemplate(allocator, source.url_templates[0], owner, repo);
+}
+
+pub fn expandUrls(
+    allocator: std.mem.Allocator,
+    source: Source,
+    owner: []const u8,
+    repo: []const u8,
+) ![]const []const u8 {
+    if (source.url_templates.len == 0) return error.InvalidConfig;
+
+    var out: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (out.items) |url| allocator.free(url);
+        out.deinit(allocator);
+    }
+
+    for (source.url_templates) |template| {
+        try out.append(allocator, try expandUrlTemplate(allocator, template, owner, repo));
+    }
+
+    return out.toOwnedSlice(allocator);
+}
+
+pub fn freeStringList(allocator: std.mem.Allocator, list: []const []const u8) void {
+    if (list.len == 0) return;
+    for (list) |value| allocator.free(value);
+    allocator.free(list);
+}
+
+fn expandUrlTemplate(
+    allocator: std.mem.Allocator,
+    url_template: []const u8,
+    owner: []const u8,
+    repo: []const u8,
+) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;
     errdefer out.deinit(allocator);
 
-    var rest = source.url_template;
+    var rest = url_template;
     while (rest.len != 0) {
         if (std.mem.startsWith(u8, rest, "{owner}")) {
             try out.appendSlice(allocator, owner);
@@ -149,81 +183,194 @@ fn parseTomlSubset(
     agent_list: *std.ArrayList(AgentDef),
     alias_list: *std.ArrayList(Alias),
 ) !void {
-    var state: ParseState = .{};
+    var parser = toml.Parser(toml.Table).init(allocator);
+    defer parser.deinit();
 
-    var lines = std.mem.splitScalar(u8, bytes, '\n');
-    while (lines.next()) |raw_line| {
-        const without_comment = if (std.mem.indexOfScalar(u8, raw_line, '#')) |i| raw_line[0..i] else raw_line;
-        const line = std.mem.trim(u8, without_comment, " \t\r\n");
-        if (line.len == 0) continue;
+    const parsed = parser.parseString(bytes) catch return error.InvalidConfig;
+    defer parsed.deinit();
 
-        if (line[0] == '[') {
-            state = try parseSection(line);
-            continue;
+    try mergeTomlRoot(allocator, parsed.value, source_list, agent_list, alias_list);
+}
+
+fn mergeTomlRoot(
+    allocator: std.mem.Allocator,
+    root: toml.Table,
+    source_list: *std.ArrayList(Source),
+    agent_list: *std.ArrayList(AgentDef),
+    alias_list: *std.ArrayList(Alias),
+) !void {
+    if (root.get("sources")) |value| switch (value) {
+        .table => |table| try mergeSources(allocator, table, source_list),
+        else => return error.InvalidConfig,
+    };
+    if (root.get("agents")) |value| switch (value) {
+        .table => |table| try mergeAgents(allocator, table, agent_list),
+        else => return error.InvalidConfig,
+    };
+    if (root.get("aliases")) |value| switch (value) {
+        .table => |table| try mergeAliases(allocator, table, alias_list),
+        else => return error.InvalidConfig,
+    };
+}
+
+fn mergeSources(
+    allocator: std.mem.Allocator,
+    table: *toml.Table,
+    source_list: *std.ArrayList(Source),
+) !void {
+    var it = table.iterator();
+    while (it.next()) |entry| {
+        const label = entry.key_ptr.*;
+        try validateId(label);
+        const source_table = switch (entry.value_ptr.*) {
+            .table => |value| value,
+            else => return error.InvalidConfig,
+        };
+
+        if (source_table.get("url")) |value| {
+            const url = try expectString(value);
+            const urls = [_][]const u8{url};
+            try putSourceUrls(allocator, source_list, label, urls[0..]);
         }
 
-        const eq = std.mem.indexOfScalar(u8, line, '=') orelse return error.InvalidConfig;
-        const key = std.mem.trim(u8, line[0..eq], " \t");
-        const value = try parseString(line[eq + 1 ..]);
+        if (source_table.get("urls")) |value| {
+            var urls: std.ArrayList([]const u8) = .empty;
+            defer urls.deinit(allocator);
+            try appendStringArray(allocator, &urls, value);
+            try putSourceUrls(allocator, source_list, label, urls.items);
+        }
 
-        switch (state.current_kind) {
-            .none => continue,
-            .source => if (std.mem.eql(u8, key, "url")) {
-                try putSource(allocator, source_list, state.current_id, value);
-            },
-            .agent => try putAgentField(allocator, agent_list, state.current_id, key, value),
-            .aliases => {
-                try validateId(key);
-                try putAlias(allocator, alias_list, key, value);
-            },
-            .alias => if (std.mem.eql(u8, key, "value")) {
-                try putAlias(allocator, alias_list, state.current_id, value);
-            },
+        if (source_table.get("timeout")) |value| {
+            try putSourceTimeout(allocator, source_list, label, try expectU32(value));
         }
     }
 }
 
-fn parseSection(line: []const u8) !ParseState {
-    if (line[line.len - 1] != ']') return error.InvalidConfig;
-    const section = line[1 .. line.len - 1];
-    if (std.mem.startsWith(u8, section, "sources.")) {
-        const id = section["sources.".len..];
+fn mergeAgents(
+    allocator: std.mem.Allocator,
+    table: *toml.Table,
+    agent_list: *std.ArrayList(AgentDef),
+) !void {
+    var it = table.iterator();
+    while (it.next()) |entry| {
+        const id = entry.key_ptr.*;
         try validateId(id);
-        return .{ .current_kind = .source, .current_id = id };
+        const agent_table = switch (entry.value_ptr.*) {
+            .table => |value| value,
+            else => return error.InvalidConfig,
+        };
+
+        if (agent_table.get("label")) |value| {
+            try putAgentField(allocator, agent_list, id, "label", try expectString(value));
+        }
+        if (agent_table.get("dir")) |value| {
+            try putAgentField(allocator, agent_list, id, "dir", try expectString(value));
+        }
+        if (agent_table.get("skills")) |value| {
+            try putAgentField(allocator, agent_list, id, "skills", try expectString(value));
+        }
     }
-    if (std.mem.startsWith(u8, section, "agents.")) {
-        const id = section["agents.".len..];
-        try validateId(id);
-        return .{ .current_kind = .agent, .current_id = id };
-    }
-    if (std.mem.eql(u8, section, "aliases")) {
-        return .{ .current_kind = .aliases };
-    }
-    if (std.mem.startsWith(u8, section, "aliases.")) {
-        const id = section["aliases.".len..];
-        try validateId(id);
-        return .{ .current_kind = .alias, .current_id = id };
-    }
-    return .{};
 }
 
-fn putSource(
+fn mergeAliases(
+    allocator: std.mem.Allocator,
+    table: *toml.Table,
+    alias_list: *std.ArrayList(Alias),
+) !void {
+    var it = table.iterator();
+    while (it.next()) |entry| {
+        const name = entry.key_ptr.*;
+        try validateId(name);
+        switch (entry.value_ptr.*) {
+            .string => |value| try putAlias(allocator, alias_list, name, value),
+            .table => |alias_table| {
+                const value = alias_table.get("value") orelse return error.InvalidConfig;
+                try putAlias(allocator, alias_list, name, try expectString(value));
+            },
+            else => return error.InvalidConfig,
+        }
+    }
+}
+
+fn expectString(value: toml.Value) ![]const u8 {
+    return switch (value) {
+        .string => |string| string,
+        else => error.InvalidConfig,
+    };
+}
+
+fn expectU32(value: toml.Value) !u32 {
+    const int = switch (value) {
+        .integer => |integer| integer,
+        else => return error.InvalidConfig,
+    };
+    if (int <= 0 or int > std.math.maxInt(u32)) return error.InvalidConfig;
+    return @intCast(int);
+}
+
+fn appendStringArray(allocator: std.mem.Allocator, out: *std.ArrayList([]const u8), value: toml.Value) !void {
+    const array = switch (value) {
+        .array => |array| array,
+        else => return error.InvalidConfig,
+    };
+    for (array.items) |item| {
+        try out.append(allocator, try expectString(item));
+    }
+}
+
+fn putSourceUrls(
     allocator: std.mem.Allocator,
     list: *std.ArrayList(Source),
     label: []const u8,
-    url_template: []const u8,
+    url_templates: []const []const u8,
 ) !void {
-    for (list.items) |*source| {
-        if (!std.mem.eql(u8, source.label, label)) continue;
-        allocator.free(source.url_template);
-        source.url_template = try allocator.dupe(u8, url_template);
-        return;
+    if (url_templates.len == 0) return error.InvalidConfig;
+
+    const index = try ensureSource(allocator, list, label);
+    const source = &list.items[index];
+    const new_templates = try dupeStringList(allocator, url_templates);
+    freeStringList(allocator, source.url_templates);
+    source.url_templates = new_templates;
+}
+
+fn putSourceTimeout(
+    allocator: std.mem.Allocator,
+    list: *std.ArrayList(Source),
+    label: []const u8,
+    seconds: u32,
+) !void {
+    if (seconds == 0) return error.InvalidConfig;
+    const index = try ensureSource(allocator, list, label);
+    list.items[index].connect_timeout_seconds = seconds;
+}
+
+fn ensureSource(allocator: std.mem.Allocator, list: *std.ArrayList(Source), label: []const u8) !usize {
+    for (list.items, 0..) |source, i| {
+        if (std.mem.eql(u8, source.label, label)) return i;
     }
 
     try list.append(allocator, .{
         .label = try allocator.dupe(u8, label),
-        .url_template = try allocator.dupe(u8, url_template),
+        .url_templates = &.{},
+        .connect_timeout_seconds = default_connect_timeout_seconds,
     });
+    return list.items.len - 1;
+}
+
+fn dupeStringList(allocator: std.mem.Allocator, list: []const []const u8) ![]const []const u8 {
+    var out = try allocator.alloc([]const u8, list.len);
+    errdefer allocator.free(out);
+
+    var initialized: usize = 0;
+    errdefer {
+        for (out[0..initialized]) |value| allocator.free(value);
+    }
+
+    for (list, 0..) |value, i| {
+        out[i] = try allocator.dupe(u8, value);
+        initialized += 1;
+    }
+    return out;
 }
 
 fn putAlias(
@@ -281,14 +428,6 @@ fn ensureAgent(allocator: std.mem.Allocator, list: *std.ArrayList(AgentDef), id:
     return list.items.len - 1;
 }
 
-fn parseString(raw: []const u8) ![]const u8 {
-    const value = std.mem.trim(u8, raw, " \t\r\n");
-    if (value.len < 2 or value[0] != '"' or value[value.len - 1] != '"') return error.InvalidConfig;
-    const inner = value[1 .. value.len - 1];
-    if (std.mem.indexOfAny(u8, inner, "\"\\") != null) return error.InvalidConfig;
-    return inner;
-}
-
 fn validateId(id: []const u8) !void {
     if (id.len == 0) return error.InvalidConfig;
     for (id) |c| {
@@ -313,7 +452,11 @@ test "merge config sources and agents" {
 
     try parseTomlSubset(allocator,
         \\[sources.gitlab]
-        \\url = "https://gitlab.com/{owner}/{repo}.git"
+        \\timeout = 3
+        \\urls = [
+        \\  "https://gitlab.com/{owner}/{repo}.git",
+        \\  "https://mirror.example/{owner}/{repo}.git",
+        \\]
         \\
         \\[agents.cursor]
         \\label = "Cursor"
@@ -329,9 +472,11 @@ test "merge config sources and agents" {
     , &source_list, &agent_list, &alias_list);
 
     const gitlab = findSource(source_list.items, "gitlab").?;
-    const url = try expandUrl(allocator, gitlab, "team", "repo");
-    defer allocator.free(url);
-    try std.testing.expectEqualStrings("https://gitlab.com/team/repo.git", url);
+    try std.testing.expectEqual(@as(u32, 3), gitlab.connect_timeout_seconds);
+    const urls = try expandUrls(allocator, gitlab, "team", "repo");
+    defer freeStringList(allocator, urls);
+    try std.testing.expectEqualStrings("https://gitlab.com/team/repo.git", urls[0]);
+    try std.testing.expectEqualStrings("https://mirror.example/team/repo.git", urls[1]);
     try std.testing.expectEqualStrings("cursor", agent_list.items[0].id);
     try std.testing.expectEqualStrings(".cursor", agent_list.items[0].dir);
     try std.testing.expectEqualStrings("@kromahlusenii-ops/ham", findAlias(alias_list.items, "ham").?.value);

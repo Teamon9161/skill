@@ -33,7 +33,16 @@ pub fn run(ctx: *Context, selector: ?source_spec.Selector) !void {
 
 fn updateOne(ctx: *Context, cfg: config.Config, index: usize) !void {
     const skill = &ctx.manifest.skills[index];
-    try git.update(ctx.allocator, ctx.io, skill.path, skill.branch);
+    const source_options = try updateSourceOptions(ctx.allocator, cfg, skill.*);
+    const urls = source_options.urls;
+    defer config.freeStringList(ctx.allocator, urls);
+
+    const selected_source = try git.updateAny(ctx.allocator, ctx.io, skill.path, skill.branch, urls, source_options.connect_timeout_seconds);
+    defer ctx.allocator.free(selected_source);
+    if (selected_source.len != 0) {
+        ctx.allocator.free(skill.source);
+        skill.source = try ctx.allocator.dupe(u8, selected_source);
+    }
 
     const layout = try detect.rootSkill(ctx.allocator, ctx.io, skill.path);
     defer layout.deinit(ctx.allocator);
@@ -51,4 +60,26 @@ fn updateOne(ctx: *Context, cfg: config.Config, index: usize) !void {
     defer agents.deinitList(ctx.allocator, agent_list);
     const created_links = try links.createForAgents(ctx.allocator, ctx.io, agent_list, skill.name, layout.target, .{ .prompt_conflicts = false });
     manifest.replaceLinks(ctx.allocator, skill, created_links);
+}
+
+const UpdateSourceOptions = struct {
+    urls: []const []const u8,
+    connect_timeout_seconds: u32,
+};
+
+fn updateSourceOptions(allocator: std.mem.Allocator, cfg: config.Config, skill: manifest.Skill) !UpdateSourceOptions {
+    if (config.findSource(cfg.sources, skill.source_label)) |source| {
+        return .{
+            .urls = try config.expandUrls(allocator, source, skill.owner, skill.project),
+            .connect_timeout_seconds = source.connect_timeout_seconds,
+        };
+    }
+
+    var urls = try allocator.alloc([]const u8, 1);
+    errdefer allocator.free(urls);
+    urls[0] = try allocator.dupe(u8, skill.source);
+    return .{
+        .urls = urls,
+        .connect_timeout_seconds = config.default_connect_timeout_seconds,
+    };
 }

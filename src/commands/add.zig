@@ -52,11 +52,23 @@ fn addRemote(ctx: *Context, spec: source_spec.RemoteSpec, agent_list: []const ag
     defer ctx.allocator.free(repo_path);
 
     if (try repoExists(ctx.io, repo_path)) {
-        try git.update(ctx.allocator, ctx.io, repo_path, "");
+        const selected_source = try git.updateAny(ctx.allocator, ctx.io, repo_path, "", spec.urls, spec.connect_timeout_seconds);
+        defer ctx.allocator.free(selected_source);
+        try installRemoteLayouts(ctx, spec, repo_path, selected_source, agent_list);
     } else {
-        try git.clone(ctx.allocator, ctx.io, spec.normalized, repo_path);
+        const selected_source = try git.cloneAny(ctx.allocator, ctx.io, spec.urls, repo_path, spec.connect_timeout_seconds);
+        defer ctx.allocator.free(selected_source);
+        try installRemoteLayouts(ctx, spec, repo_path, selected_source, agent_list);
     }
+}
 
+fn installRemoteLayouts(
+    ctx: *Context,
+    spec: source_spec.RemoteSpec,
+    repo_path: []const u8,
+    selected_source: []const u8,
+    agent_list: []const agents.Agent,
+) !void {
     const base_path = try sourceBasePath(ctx.allocator, repo_path, spec.source_path);
     defer ctx.allocator.free(base_path);
 
@@ -76,7 +88,7 @@ fn addRemote(ctx: *Context, spec: source_spec.RemoteSpec, agent_list: []const ag
             .project = spec.repo,
             .source_label = spec.source_label,
             .source_path = spec.source_path,
-            .source = spec.normalized,
+            .source = selected_source,
             .storage_path = repo_path,
             .branch = branch,
             .commit = commit,
@@ -159,6 +171,8 @@ fn installLayout(
     };
 
     const skill = &ctx.manifest.skills[index];
+    ctx.allocator.free(skill.source);
+    skill.source = try ctx.allocator.dupe(u8, info.source);
     try manifest.setGit(ctx.allocator, skill, info.branch, info.commit);
     try manifest.replaceLinksForAgents(ctx.allocator, skill, agent_list, created_links);
     created_links_owned = false;

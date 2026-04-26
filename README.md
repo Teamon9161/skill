@@ -186,6 +186,13 @@ Example `config.toml`:
 [sources.gitlab]
 url = "https://gitlab.com/{owner}/{repo}.git"
 
+[sources.github]
+timeout = 8
+urls = [
+  "https://github.com/{owner}/{repo}.git",
+  "https://gh-proxy.example/{owner}/{repo}.git",
+]
+
 [agents.cursor]
 label = "Cursor"
 dir = ".cursor"
@@ -199,6 +206,8 @@ value = "C:/path/to/demo-skill"
 ```
 
 Agent paths are relative to the selected scope unless absolute paths are used. Global scope resolves relative agent directories from the user home. Local scope resolves them from the current working directory.
+
+Sources may use either `url` for one Git remote or `urls` for ordered alternatives. During clone and update, `skill` probes each candidate with `git ls-remote <url> HEAD`, then uses the first address that works for the current network. `timeout` defaults to 8 seconds and is passed to Git's low-speed HTTP timeout.
 
 ## Behavior Notes
 

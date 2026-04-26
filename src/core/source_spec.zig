@@ -28,13 +28,15 @@ pub const RemoteSpec = struct {
     repo: []const u8,
     source_path: []const u8,
     normalized: []const u8,
+    urls: []const []const u8,
+    connect_timeout_seconds: u32,
 
     pub fn deinit(self: RemoteSpec, allocator: std.mem.Allocator) void {
         allocator.free(self.source_label);
         allocator.free(self.owner);
         allocator.free(self.repo);
         allocator.free(self.source_path);
-        allocator.free(self.normalized);
+        config.freeStringList(allocator, self.urls);
     }
 };
 
@@ -112,14 +114,17 @@ pub fn parseRemoteSpec(
     errdefer allocator.free(repo_copy);
     const source_path_copy = try allocator.dupe(u8, parts.source_path);
     errdefer allocator.free(source_path_copy);
-    const normalized = try config.expandUrl(allocator, source, parts.owner, parts.repo);
+    const urls = try config.expandUrls(allocator, source, parts.owner, parts.repo);
+    errdefer config.freeStringList(allocator, urls);
 
     return .{
         .source_label = label_copy,
         .owner = owner_copy,
         .repo = repo_copy,
         .source_path = source_path_copy,
-        .normalized = normalized,
+        .normalized = urls[0],
+        .urls = urls,
+        .connect_timeout_seconds = source.connect_timeout_seconds,
     };
 }
 
@@ -289,13 +294,19 @@ test "parse add spec local and custom source" {
         for (source_list.items) |source| source.deinit(allocator);
         source_list.deinit(allocator);
     }
+    const github_templates = try allocator.alloc([]const u8, 1);
+    github_templates[0] = try allocator.dupe(u8, "https://github.com/{owner}/{repo}.git");
     try source_list.append(allocator, .{
         .label = try allocator.dupe(u8, "github"),
-        .url_template = try allocator.dupe(u8, "https://github.com/{owner}/{repo}.git"),
+        .url_templates = github_templates,
+        .connect_timeout_seconds = config.default_connect_timeout_seconds,
     });
+    const gitlab_templates = try allocator.alloc([]const u8, 1);
+    gitlab_templates[0] = try allocator.dupe(u8, "https://gitlab.com/{owner}/{repo}.git");
     try source_list.append(allocator, .{
         .label = try allocator.dupe(u8, "gitlab"),
-        .url_template = try allocator.dupe(u8, "https://gitlab.com/{owner}/{repo}.git"),
+        .url_templates = gitlab_templates,
+        .connect_timeout_seconds = 2,
     });
 
     const local = try parseAddSpec(allocator, "C:/skills/demo", source_list.items);
@@ -310,6 +321,7 @@ test "parse add spec local and custom source" {
     try std.testing.expectEqualStrings("repo", remote.remote.repo);
     try std.testing.expectEqualStrings("path/to/skill", remote.remote.source_path);
     try std.testing.expectEqualStrings("https://gitlab.com/owner/repo.git", remote.remote.normalized);
+    try std.testing.expectEqual(@as(u32, 2), remote.remote.connect_timeout_seconds);
 }
 
 test "parse legacy repo spec owner project" {

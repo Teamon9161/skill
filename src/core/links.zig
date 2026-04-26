@@ -148,7 +148,15 @@ fn deleteExisting(io: std.Io, link_path: []const u8) !void {
 
 fn createJunction(allocator: std.mem.Allocator, io: std.Io, link_path: []const u8, target: []const u8) !void {
     const result = try std.process.run(allocator, io, .{
-        .argv = &.{ "cmd.exe", "/d", "/c", "mklink", "/J", link_path, target },
+        .argv = &.{
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "& { param($p, $t) New-Item -ItemType Junction -Path $p -Target $t | Out-Null }",
+            link_path,
+            target,
+        },
         .stdout_limit = .limited(1024 * 1024),
         .stderr_limit = .limited(1024 * 1024),
         .expand_arg0 = .expand,
@@ -159,7 +167,11 @@ fn createJunction(allocator: std.mem.Allocator, io: std.Io, link_path: []const u
     }
 
     switch (result.term) {
-        .exited => |code| if (code != 0) return error.LinkCreateFailed,
+        .exited => |code| if (code != 0) {
+            try std.Io.File.writeStreamingAll(.stderr(), io, result.stdout);
+            try std.Io.File.writeStreamingAll(.stderr(), io, result.stderr);
+            return error.LinkCreateFailed;
+        },
         else => return error.LinkCreateFailed,
     }
 }
