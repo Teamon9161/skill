@@ -45,7 +45,7 @@ fn removeOne(ctx: *Context, agent_list: []const agents.Agent, query: []const u8)
         return false;
     }
 
-    const selected = try chooseMatches(ctx, linked_indices, query, agent_list);
+    const selected = try chooseMatches(ctx, linked_indices, query);
     defer ctx.allocator.free(selected);
 
     var changed = false;
@@ -81,13 +81,13 @@ fn filterLinkedMatches(
     return out.toOwnedSlice(allocator);
 }
 
-fn chooseMatches(ctx: *Context, indices: []const usize, query: []const u8, agent_list: []const agents.Agent) ![]bool {
+fn chooseMatches(ctx: *Context, indices: []const usize, query: []const u8) ![]bool {
     const selected = try ctx.allocator.alloc(bool, indices.len);
     errdefer ctx.allocator.free(selected);
     @memset(selected, false);
 
     if (indices.len == 1) {
-        selected[0] = try confirmSingleMatch(ctx, ctx.manifest.skills[indices[0]], agent_list);
+        selected[0] = true;
         return selected;
     }
 
@@ -131,30 +131,6 @@ fn chooseMatches(ctx: *Context, indices: []const usize, query: []const u8, agent
     return selected;
 }
 
-fn confirmSingleMatch(ctx: *Context, skill: manifest.Skill, agent_list: []const agents.Agent) !bool {
-    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, "Remove ");
-    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, skill.name);
-    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, " from ");
-
-    var any = false;
-    for (skill.links) |link| {
-        if (!matchesAgentPath(agent_list, link.agent, link.path)) continue;
-        if (any) try std.Io.File.writeStreamingAll(.stdout(), ctx.io, ", ");
-        try std.Io.File.writeStreamingAll(.stdout(), ctx.io, link.agent);
-        any = true;
-    }
-    if (!any) try std.Io.File.writeStreamingAll(.stdout(), ctx.io, "selected agents");
-    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, "? [y/N] ");
-
-    var buf: [16]u8 = undefined;
-    const answer = try readPromptLine(ctx.io, &buf);
-    if (answer.len == 0) return false;
-    return switch (std.ascii.toLower(answer[0])) {
-        'y' => true,
-        'n' => false,
-        else => error.InvalidConfirmation,
-    };
-}
 
 fn readPromptLine(io: std.Io, buf: []u8) ![]const u8 {
     var len: usize = 0;
