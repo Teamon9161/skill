@@ -14,8 +14,8 @@ pub const Command = union(enum) {
     help,
     add: AddTarget,
     remove: Target,
-    delete: []const u8,
-    update: ?source_spec.Selector,
+    delete: []const []const u8,
+    update: []const source_spec.Selector,
     list,
     where: []const u8,
     rebuild,
@@ -26,28 +26,36 @@ pub const Command = union(enum) {
     pub fn deinit(self: Command, allocator: std.mem.Allocator) void {
         switch (self) {
             .add => |target| {
-                allocator.free(target.input);
+                for (target.inputs) |input| allocator.free(input);
+                allocator.free(target.inputs);
                 target.filter.deinit(allocator);
             },
             .remove => |target| {
-                allocator.free(target.query);
+                for (target.queries) |q| allocator.free(q);
+                allocator.free(target.queries);
                 target.filter.deinit(allocator);
             },
             .where => |query| allocator.free(query),
-            .delete => |query| allocator.free(query),
-            .update => |maybe| if (maybe) |selector| selector.deinit(allocator),
+            .delete => |queries| {
+                for (queries) |q| allocator.free(q);
+                allocator.free(queries);
+            },
+            .update => |selectors| {
+                for (selectors) |sel| sel.deinit(allocator);
+                allocator.free(selectors);
+            },
             else => {},
         }
     }
 };
 
 pub const AddTarget = struct {
-    input: []const u8,
+    inputs: []const []const u8,
     filter: agents.AgentFilter,
 };
 
 pub const Target = struct {
-    query: []const u8,
+    queries: []const []const u8,
     filter: agents.AgentFilter,
 };
 
@@ -103,9 +111,9 @@ fn parseAdd(allocator: std.mem.Allocator, io: std.Io, iter: *std.process.Args.It
         parsed.deinit(allocator);
         return .help;
     }
-    const input = parsed.value orelse return error.MissingSpec;
+    if (parsed.values.len == 0) return error.MissingSpec;
     return .{ .add = .{
-        .input = try allocator.dupe(u8, input),
+        .inputs = parsed.values,
         .filter = .{ .ids = parsed.agent_ids, .scope = parsed.scope },
     } };
 }
@@ -118,20 +126,22 @@ fn parseRemove(allocator: std.mem.Allocator, io: std.Io, iter: *std.process.Args
         parsed.deinit(allocator);
         return .help;
     }
-    const query = parsed.value orelse return error.MissingSelector;
+    if (parsed.values.len == 0) return error.MissingSelector;
     return .{ .remove = .{
-        .query = try allocator.dupe(u8, query),
+        .queries = parsed.values,
         .filter = .{ .ids = parsed.agent_ids, .scope = parsed.scope },
     } };
 }
 
 const DynamicAgentArgs = struct {
-    value: ?[]const u8 = null,
+    values: []const []const u8 = &.{},
     agent_ids: []const []const u8 = &.{},
     scope: agents.Scope = .global,
     help: bool = false,
 
     fn deinit(self: DynamicAgentArgs, allocator: std.mem.Allocator) void {
+        for (self.values) |v| allocator.free(v);
+        allocator.free(self.values);
         for (self.agent_ids) |id| allocator.free(id);
         allocator.free(self.agent_ids);
     }
@@ -146,12 +156,16 @@ fn parseDynamicAgentArgs(
         for (ids.items) |id| allocator.free(id);
         ids.deinit(allocator);
     }
+    var values: std.ArrayList([]const u8) = .empty;
+    errdefer {
+        for (values.items) |v| allocator.free(v);
+        values.deinit(allocator);
+    }
 
-    var value: ?[]const u8 = null;
     var scope: agents.Scope = .global;
     while (iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
-            return .{ .help = true, .agent_ids = try ids.toOwnedSlice(allocator) };
+            return .{ .help = true, .values = try values.toOwnedSlice(allocator), .agent_ids = try ids.toOwnedSlice(allocator) };
         }
         if (std.mem.eql(u8, arg, "-l") or std.mem.eql(u8, arg, "--local")) {
             scope = .local;
@@ -169,11 +183,10 @@ fn parseDynamicAgentArgs(
             continue;
         }
         if (std.mem.startsWith(u8, arg, "-")) return error.InvalidAgentFlag;
-        if (value != null) return error.TooManyArguments;
-        value = arg;
+        try values.append(allocator, try allocator.dupe(u8, arg));
     }
 
-    return .{ .value = value, .agent_ids = try ids.toOwnedSlice(allocator), .scope = scope };
+    return .{ .values = try values.toOwnedSlice(allocator), .agent_ids = try ids.toOwnedSlice(allocator), .scope = scope };
 }
 
 fn appendUniqueAgent(allocator: std.mem.Allocator, ids: *std.ArrayList([]const u8), id: []const u8) !void {
@@ -186,7 +199,7 @@ fn appendUniqueAgent(allocator: std.mem.Allocator, ids: *std.ArrayList([]const u
 fn parseDelete(allocator: std.mem.Allocator, io: std.Io, iter: *std.process.Args.Iterator) !Command {
     const params = comptime clap.parseParamsComptime(
         \\-h, --help  Display help and exit.
-        \\<str>
+        \\<str>...
         \\
     );
     var diag = clap.Diagnostic{};
@@ -196,8 +209,14 @@ fn parseDelete(allocator: std.mem.Allocator, io: std.Io, iter: *std.process.Args
     };
     defer res.deinit();
     if (res.args.help != 0) return .help;
-    const query = res.positionals[0] orelse return error.MissingSelector;
-    return .{ .delete = try allocator.dupe(u8, query) };
+    if (res.positionals[0].len == 0) return error.MissingSelector;
+    var queries = try allocator.alloc([]const u8, res.positionals[0].len);
+    errdefer {
+        for (queries) |q| allocator.free(q);
+        allocator.free(queries);
+    }
+    for (res.positionals[0], 0..) |q, i| queries[i] = try allocator.dupe(u8, q);
+    return .{ .delete = queries };
 }
 
 fn parseUpdate(allocator: std.mem.Allocator, io: std.Io, iter: *std.process.Args.Iterator) !Command {
@@ -213,9 +232,15 @@ fn parseUpdate(allocator: std.mem.Allocator, io: std.Io, iter: *std.process.Args
     };
     defer res.deinit();
     if (res.args.help != 0) return .help;
-    if (res.positionals[0].len > 1) return error.TooManyArguments;
-    if (res.positionals[0].len == 0) return .{ .update = null };
-    return .{ .update = try source_spec.parseSelector(allocator, res.positionals[0][0]) };
+    var selectors: std.ArrayList(source_spec.Selector) = .empty;
+    errdefer {
+        for (selectors.items) |sel| sel.deinit(allocator);
+        selectors.deinit(allocator);
+    }
+    for (res.positionals[0]) |s| {
+        try selectors.append(allocator, try source_spec.parseSelector(allocator, s));
+    }
+    return .{ .update = try selectors.toOwnedSlice(allocator) };
 }
 
 fn parseList(allocator: std.mem.Allocator, io: std.Io, iter: *std.process.Args.Iterator) !Command {
@@ -300,10 +325,10 @@ fn parseUninstall(allocator: std.mem.Allocator, io: std.Io, iter: *std.process.A
 pub fn printUsage(io: std.Io) !void {
     try std.Io.File.writeStreamingAll(.stderr(), io,
         \\Usage:
-        \\  skill add|-A [-l|--local] [--<agent>|--agent <id>] <source|path>
-        \\  skill remove|-R [-l|--local] <query> [--<agent>|--agent <id>]
-        \\  skill delete|-D <query>
-        \\  skill update|-U [project|@owner/project]
+        \\  skill add|-A [-l|--local] [--<agent>|--agent <id>] <source|path>...
+        \\  skill remove|-R [-l|--local] <query>... [--<agent>|--agent <id>]
+        \\  skill delete|-D <query>...
+        \\  skill update|-U [project|@owner/project]...
         \\  skill list
         \\  skill where <query>
         \\  skill rebuild

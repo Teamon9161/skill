@@ -17,7 +17,16 @@ pub fn run(ctx: *Context, target: cli.Target) !void {
     const agent_list = try agents.detect(ctx.allocator, ctx.io, ctx.paths.home, cwd, cfg.agents, target.filter);
     defer agents.deinitList(ctx.allocator, agent_list);
 
-    const indices = try manifest.matchSkills(ctx.allocator, ctx.manifest, target.query);
+    var changed = false;
+    for (target.queries) |query| {
+        if (try removeOne(ctx, agent_list, query)) changed = true;
+    }
+
+    if (changed) try ctx.save();
+}
+
+fn removeOne(ctx: *Context, agent_list: []const agents.Agent, query: []const u8) !bool {
+    const indices = try manifest.matchSkills(ctx.allocator, ctx.manifest, query);
     defer ctx.allocator.free(indices);
 
     const linked_indices = try filterLinkedMatches(ctx.allocator, ctx.manifest, indices, agent_list);
@@ -25,12 +34,12 @@ pub fn run(ctx: *Context, target: cli.Target) !void {
 
     if (linked_indices.len == 0) {
         try std.Io.File.writeStreamingAll(.stderr(), ctx.io, "warning: no linked skills match ");
-        try std.Io.File.writeStreamingAll(.stderr(), ctx.io, target.query);
+        try std.Io.File.writeStreamingAll(.stderr(), ctx.io, query);
         try std.Io.File.writeStreamingAll(.stderr(), ctx.io, "\n");
-        return;
+        return false;
     }
 
-    const selected = try chooseMatches(ctx, linked_indices, target.query, agent_list);
+    const selected = try chooseMatches(ctx, linked_indices, query, agent_list);
     defer ctx.allocator.free(selected);
 
     var changed = false;
@@ -42,8 +51,7 @@ pub fn run(ctx: *Context, target: cli.Target) !void {
         try dropRecordedLinks(ctx.allocator, skill, agent_list);
         changed = true;
     }
-
-    if (changed) try ctx.save();
+    return changed;
 }
 
 fn filterLinkedMatches(

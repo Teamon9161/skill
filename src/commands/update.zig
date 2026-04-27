@@ -9,27 +9,29 @@ const manifest = @import("../core/manifest.zig");
 const paths = @import("../core/paths.zig");
 const source_spec = @import("../core/source_spec.zig");
 
-pub fn run(ctx: *Context, selector: ?source_spec.Selector) !void {
+pub fn run(ctx: *Context, selectors: []const source_spec.Selector) !void {
     try git.check(ctx.allocator, ctx.io);
     const cfg = try config.load(ctx.allocator, ctx.io, ctx.paths.config, ctx.paths.sources);
     defer cfg.deinit(ctx.allocator);
 
-    if (selector) |sel| {
-        const index = manifest.findIndex(ctx.manifest, sel) orelse return error.SkillNotFound;
-        try updateOne(ctx, cfg, index);
-        try syncSiblings(ctx, index);
+    if (selectors.len == 0) {
+        var failed = false;
+        for (ctx.manifest.skills, 0..) |_, i| {
+            updateOne(ctx, cfg, i) catch {
+                failed = true;
+            };
+        }
         try ctx.save();
+        if (failed) return error.SomeUpdatesFailed;
         return;
     }
 
-    var failed = false;
-    for (ctx.manifest.skills, 0..) |_, i| {
-        updateOne(ctx, cfg, i) catch {
-            failed = true;
-        };
+    for (selectors) |sel| {
+        const index = manifest.findIndex(ctx.manifest, sel) orelse return error.SkillNotFound;
+        try updateOne(ctx, cfg, index);
+        try syncSiblings(ctx, index);
     }
     try ctx.save();
-    if (failed) return error.SomeUpdatesFailed;
 }
 
 fn updateOne(ctx: *Context, cfg: config.Config, index: usize) !void {

@@ -4,7 +4,12 @@ const links = @import("../core/links.zig");
 const manifest = @import("../core/manifest.zig");
 const paths = @import("../core/paths.zig");
 
-pub fn run(ctx: *Context, query: []const u8) !void {
+pub fn run(ctx: *Context, queries: []const []const u8) !void {
+    for (queries) |query| try deleteOne(ctx, query);
+    try ctx.save();
+}
+
+fn deleteOne(ctx: *Context, query: []const u8) !void {
     const matched = try manifest.matchSkills(ctx.allocator, ctx.manifest, query);
     defer ctx.allocator.free(matched);
 
@@ -39,8 +44,6 @@ pub fn run(ctx: *Context, query: []const u8) !void {
         if (!selected[r]) continue;
         try deleteRepo(ctx, repo_path);
     }
-
-    try ctx.save();
 }
 
 fn deleteRepo(ctx: *Context, repo_path: []const u8) !void {

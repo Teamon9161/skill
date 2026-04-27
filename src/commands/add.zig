@@ -14,10 +14,6 @@ pub fn run(ctx: *Context, target: cli.AddTarget) !void {
     const cfg = try config.load(ctx.allocator, ctx.io, ctx.paths.config, ctx.paths.sources);
     defer cfg.deinit(ctx.allocator);
 
-    const input = resolveAlias(ctx.io, target.input, cfg.aliases);
-    const spec = try source_spec.parseAddSpec(ctx.allocator, input, cfg.sources);
-    defer spec.deinit(ctx.allocator);
-
     const cwd = try paths.cwdAlloc(ctx.allocator, ctx.io);
     defer ctx.allocator.free(cwd);
 
@@ -30,9 +26,14 @@ pub fn run(ctx: *Context, target: cli.AddTarget) !void {
     const agent_list = try agents.fromCandidates(ctx.allocator, candidate_list, selected);
     defer agents.deinitList(ctx.allocator, agent_list);
 
-    switch (spec) {
-        .remote => |remote| try addRemote(ctx, remote, agent_list),
-        .local => |local| try addLocal(ctx, local, agent_list),
+    for (target.inputs) |raw_input| {
+        const input = resolveAlias(ctx.io, raw_input, cfg.aliases);
+        const spec = try source_spec.parseAddSpec(ctx.allocator, input, cfg.sources);
+        defer spec.deinit(ctx.allocator);
+        switch (spec) {
+            .remote => |remote| try addRemote(ctx, remote, agent_list),
+            .local => |local| try addLocal(ctx, local, agent_list),
+        }
     }
 
     try ctx.save();
