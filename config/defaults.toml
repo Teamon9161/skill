@@ -24,6 +24,8 @@ skills = "skills"
 # prefer_git = ["obra/superpowers"]
 
 [aliases]
+superpowers = "@obra/superpowers"
+claude-hud = "@jarrodwatts/claude-hud"
 ham = "@kromahlusenii-ops/ham"
 lark = "@larksuite/cli"
 duck-ext = "ficc@skills/duck_ext"

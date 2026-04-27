@@ -129,6 +129,22 @@ pub fn deinitList(allocator: std.mem.Allocator, list: []Agent) void {
     allocator.free(list);
 }
 
+pub fn containsId(list: []const Agent, id: []const u8) bool {
+    for (list) |agent| {
+        if (std.mem.eql(u8, agent.id, id)) return true;
+    }
+    return false;
+}
+
+/// Returns the plugin backend binary name for the agent, or null if the agent
+/// has no plugin support or is not in the list.
+pub fn pluginBackend(list: []const Agent, id: []const u8) ?[]const u8 {
+    for (list) |agent| {
+        if (std.mem.eql(u8, agent.id, id)) return agent.plugin;
+    }
+    return null;
+}
+
 fn maybeAdd(
     allocator: std.mem.Allocator,
     io: std.Io,

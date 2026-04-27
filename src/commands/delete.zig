@@ -1,6 +1,7 @@
 const std = @import("std");
 const Context = @import("../context.zig").Context;
 const config = @import("../core/config.zig");
+const io_util = @import("io.zig");
 const links = @import("../core/links.zig");
 const manifest = @import("../core/manifest.zig");
 const paths = @import("../core/paths.zig");
@@ -44,10 +45,10 @@ fn deleteOne(ctx: *Context, cfg: config.Config, query: []const u8) !void {
 
     // Handle plugin-only skills
     if (plugin_indices.items.len > 0) {
+        // Collect all plugin links across skills and remove each unique (agent, package) once.
+        try removePluginLinksDedup(ctx.allocator, ctx.io, cfg, ctx.manifest, plugin_indices.items);
         for (plugin_indices.items) |i| {
-            const skill = &ctx.manifest.skills[i];
-            try removePluginLinks(ctx.allocator, ctx.io, cfg, skill.links);
-            try printDeletedLinks(ctx.io, skill.*);
+            try printDeletedLinks(ctx.io, ctx.manifest.skills[i]);
         }
         // Remove from manifest highest-index first
         const sorted = try ctx.allocator.dupe(usize, plugin_indices.items);
@@ -76,15 +77,37 @@ fn deleteOne(ctx: *Context, cfg: config.Config, query: []const u8) !void {
     }
 }
 
-fn removePluginLinks(allocator: std.mem.Allocator, io: std.Io, cfg: config.Config, links_to_remove: []const manifest.Link) !void {
-    for (links_to_remove) |link| {
-        if (link.kind == .git) continue;
-        const backend = if (config.findAgent(cfg, link.agent)) |def| def.plugin orelse link.agent else link.agent;
-        plugins.remove(allocator, io, backend, link.package) catch {
-            try std.Io.File.writeStreamingAll(.stderr(), io, "warning: failed to remove plugin ");
-            try std.Io.File.writeStreamingAll(.stderr(), io, link.package);
-            try std.Io.File.writeStreamingAll(.stderr(), io, "\n");
-        };
+fn removePluginLinksDedup(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    cfg: config.Config,
+    m: manifest.Manifest,
+    indices: []const usize,
+) !void {
+    var seen: std.StringHashMap(void) = .init(allocator);
+    defer {
+        var it = seen.keyIterator();
+        while (it.next()) |k_ptr| {
+            allocator.free(k_ptr.*);
+        }
+        seen.deinit();
+    }
+
+    for (indices) |i| {
+        for (m.skills[i].links) |link| {
+            if (link.kind == .git) continue;
+            const key = try std.fmt.allocPrint(allocator, "{s}\x00{s}", .{ link.agent, link.package });
+            defer allocator.free(key);
+            const entry = try seen.getOrPut(key);
+            if (entry.found_existing)
+                allocator.free(key)
+            else {
+                const backend = if (config.findAgent(cfg, link.agent)) |def| def.plugin orelse link.agent else link.agent;
+                plugins.remove(allocator, io, backend, link.package) catch {
+                    try io_util.eprintln(io, &.{ "warning: failed to remove plugin ", link.package });
+                };
+            }
+        }
     }
 }
 
@@ -140,7 +163,7 @@ fn chooseRepos(ctx: *Context, repo_paths: []const []const u8) ![]bool {
     try std.Io.File.writeStreamingAll(.stdout(), ctx.io, "Choose numbers to delete, Enter for all, or n to cancel: ");
 
     var buf: [256]u8 = undefined;
-    const answer = try readPromptLine(ctx.io, &buf);
+    const answer = try io_util.readPromptLine(ctx.io, &buf);
     if (answer.len == 0) {
         @memset(selected, true);
         return selected;
@@ -177,7 +200,7 @@ fn confirmSingleRepo(ctx: *Context, repo_path: []const u8) !bool {
     try std.Io.File.writeStreamingAll(.stdout(), ctx.io, " and remove repo from disk? [y/N] ");
 
     var buf: [16]u8 = undefined;
-    const answer = readPromptLine(ctx.io, &buf) catch |err| switch (err) {
+    const answer = io_util.readPromptLine(ctx.io, &buf) catch |err| switch (err) {
         error.EndOfStream => return false,
         else => return err,
     };
@@ -201,30 +224,12 @@ fn printRepoSkillNames(io: std.Io, m: manifest.Manifest, repo_path: []const u8) 
 
 fn printDeletedLinks(io: std.Io, skill: manifest.Skill) !void {
     if (skill.links.len == 0) return;
-    try std.Io.File.writeStreamingAll(.stdout(), io, "Deleted ");
-    try std.Io.File.writeStreamingAll(.stdout(), io, skill.name);
-    try std.Io.File.writeStreamingAll(.stdout(), io, " from:\n");
+    try io_util.println(io, &.{ "Deleted ", skill.name, " from:" });
     for (skill.links) |link| {
-        try std.Io.File.writeStreamingAll(.stdout(), io, "  - ");
-        try std.Io.File.writeStreamingAll(.stdout(), io, link.agent);
-        try std.Io.File.writeStreamingAll(.stdout(), io, ": ");
-        try std.Io.File.writeStreamingAll(.stdout(), io, link.path);
-        try std.Io.File.writeStreamingAll(.stdout(), io, "\n");
-    }
-}
-
-fn readPromptLine(io: std.Io, buf: []u8) ![]const u8 {
-    var len: usize = 0;
-    while (true) {
-        var byte: [1]u8 = undefined;
-        const n = std.Io.File.readStreaming(.stdin(), io, &.{byte[0..]}) catch |err| switch (err) {
-            error.EndOfStream => return std.mem.trim(u8, buf[0..len], " \t\r\n"),
-            else => return err,
+        const display = switch (link.kind) {
+            .git => link.path,
+            .marketplace, .plugin => link.package,
         };
-        if (n == 0) return std.mem.trim(u8, buf[0..len], " \t\r\n");
-        if (byte[0] == '\n') return std.mem.trim(u8, buf[0..len], " \t\r\n");
-        if (len == buf.len) return error.InputTooLong;
-        buf[len] = byte[0];
-        len += 1;
+        try io_util.println(io, &.{ "  - ", link.agent, ": ", display });
     }
 }

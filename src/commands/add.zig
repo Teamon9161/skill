@@ -5,6 +5,7 @@ const agents = @import("../core/agents.zig");
 const config = @import("../core/config.zig");
 const detect = @import("../core/detect.zig");
 const git = @import("../core/git.zig");
+const io_util = @import("io.zig");
 const links = @import("../core/links.zig");
 const manifest = @import("../core/manifest.zig");
 const paths = @import("../core/paths.zig");
@@ -88,31 +89,36 @@ fn installRemoteLayouts(
     defer ctx.allocator.free(base_path);
 
     const default_name = defaultSkillName(spec.repo, spec.source_path);
-    const layouts = try detect.skillLayouts(ctx.allocator, ctx.io, base_path, default_name);
-    defer freeLayouts(ctx.allocator, layouts);
+    const layouts = detect.skillLayouts(ctx.allocator, ctx.io, base_path, default_name) catch &.{};
+    defer if (layouts.len != 0) freeLayouts(ctx.allocator, layouts);
 
     const branch = try git.currentBranch(ctx.allocator, ctx.io, repo_path);
     defer ctx.allocator.free(branch);
     const commit = try git.currentCommit(ctx.allocator, ctx.io, repo_path);
     defer ctx.allocator.free(commit);
 
+    // Detect plans once — they depend on agent capabilities and base_path, not per-layout.
+    const plans = try detectAgentPlans(ctx.allocator, ctx.io, base_path, agent_list, spec, cfg, force_git);
+    defer freeAgentPlans(ctx.allocator, plans);
+
+    var git_agents: std.ArrayList(agents.Agent) = .empty;
+    defer git_agents.deinit(ctx.allocator);
+    for (plans) |plan| {
+        if (plan.kind == .git) try git_agents.append(ctx.allocator, plan.agent);
+    }
+
+    // Run the plugin CLI install once per plugin agent (not once per layout).
+    for (plans) |plan| {
+        if (plan.kind == .git) continue;
+        const pi = plan.info.?;
+        try plugins.install(ctx.allocator, ctx.io, plan.agent.plugin.?, pi, repo_path);
+    }
+
+    // Plugin install is per-repo; print the plan once before processing layouts.
+    try printInstallPlan(ctx.io, spec.repo, spec, plans, force_git);
+
+    // Process each skill layout: git symlinks + manifest entries for plugin agents.
     for (layouts) |layout| {
-        const plans = try detectAgentPlans(ctx.allocator, ctx.io, base_path, agent_list, spec, cfg, force_git);
-        defer freeAgentPlans(ctx.allocator, plans);
-
-        try printInstallPlan(ctx.io, layout.name, spec, plans, force_git);
-
-        // Separate git and plugin agents
-        var git_agents: std.ArrayList(agents.Agent) = .empty;
-        defer git_agents.deinit(ctx.allocator);
-
-        for (plans) |plan| {
-            if (plan.kind == .git) {
-                try git_agents.append(ctx.allocator, plan.agent);
-            }
-        }
-
-        // Install git agents
         if (git_agents.items.len > 0) {
             try installLayout(ctx, .{
                 .name = layout.name,
@@ -127,17 +133,17 @@ fn installRemoteLayouts(
             }, layout.target, git_agents.items);
         }
 
-        // Install plugin agents
         for (plans) |plan| {
             if (plan.kind == .git) continue;
-            try installPluginForAgent(ctx, spec, repo_path, selected_source, branch, commit, layout.name, plan);
-        }
-
-        // Delete cloned repo if no agent used git
-        if (git_agents.items.len == 0) {
-            deleteRepo(ctx.io, repo_path);
+            try recordPluginLink(ctx, spec, selected_source, branch, commit, layout.name, plan);
         }
     }
+
+    // // Delete the cloned repo only after all layouts are processed and only when
+    // // no agent uses a git symlink (git agents need the repo to stay on disk).
+    // if (git_agents.items.len == 0) {
+    //     deleteRepo(ctx.io, repo_path);
+    // }
 }
 
 fn detectAgentPlans(
@@ -168,10 +174,11 @@ fn detectAgentPlans(
     return plans;
 }
 
-fn installPluginForAgent(
+// Record a plugin link in the manifest after the CLI install has already run.
+// Uses "" as storage_path because the repo is deleted for plugin-only installs.
+fn recordPluginLink(
     ctx: *Context,
     spec: source_spec.RemoteSpec,
-    repo_path: []const u8,
     selected_source: []const u8,
     branch: []const u8,
     commit: []const u8,
@@ -179,12 +186,9 @@ fn installPluginForAgent(
     plan: AgentPlan,
 ) !void {
     const pi = plan.info.?;
-    try plugins.install(ctx.allocator, ctx.io, plan.agent.plugin.?, pi, spec.owner, spec.repo);
-
-    const link = try manifest.newPluginLink(ctx.allocator, plan.agent.id, pi.kind, pi.name, pi.marketplace, pi.scope);
+    const link = try manifest.newPluginLink(ctx.allocator, plan.agent.id, pi.kind, pi.name, pi.scope);
     errdefer link.deinit(ctx.allocator);
 
-    // Find or create skill entry
     const existing = manifest.findIdentity(
         ctx.manifest,
         spec.source_label,
@@ -195,6 +199,8 @@ fn installPluginForAgent(
     );
 
     const index = if (existing) |i| i else blk: {
+        // Plugin-only skills have no local repo; use "" so delete doesn't try to
+        // remove a repo that was already cleaned up.
         const skill = try manifest.newSkill(
             ctx.allocator,
             name,
@@ -203,7 +209,7 @@ fn installPluginForAgent(
             spec.source_label,
             spec.source_path,
             selected_source,
-            repo_path,
+            "",
         );
         try manifest.appendSkill(ctx.allocator, &ctx.manifest, skill);
         break :blk ctx.manifest.skills.len - 1;
@@ -220,13 +226,7 @@ fn installPluginForAgent(
     try manifest.replaceLinksForAgents(ctx.allocator, skill, &agent_slice, links_array);
     ctx.allocator.free(links_array);
 
-    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, "Installed ");
-    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, name);
-    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, " for ");
-    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, plan.agent.id);
-    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, " via plugin (");
-    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, @tagName(pi.kind));
-    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, ")\n");
+    try io_util.println(ctx.io, &.{ "Installed ", name, " for ", plan.agent.id, " via plugin (", @tagName(pi.kind), ")" });
 }
 
 fn printInstallPlan(
@@ -247,7 +247,7 @@ fn printInstallPlan(
     for (plans) |plan| {
         try std.Io.File.writeStreamingAll(.stdout(), io, "  ");
         try std.Io.File.writeStreamingAll(.stdout(), io, plan.agent.id);
-        try std.Io.File.writeStreamingAll(.stdout(), io, "  \xE2\x86\x92 ");
+        try std.Io.File.writeStreamingAll(.stdout(), io, "  -> ");
         switch (plan.kind) {
             .git => {
                 if (force_git) {
@@ -400,7 +400,6 @@ fn isNewLink(link: manifest.Link, prev_links: []const manifest.Link) bool {
     return true;
 }
 
-
 fn repoExists(io: std.Io, repo_path: []const u8) !bool {
     std.Io.Dir.accessAbsolute(io, repo_path, .{}) catch |err| switch (err) {
         error.FileNotFound => return false,
@@ -435,7 +434,7 @@ fn absolutePath(allocator: std.mem.Allocator, io: std.Io, input: []const u8) ![]
     return allocator.dupe(u8, buf[0..len]);
 }
 
-fn freeLayouts(allocator: std.mem.Allocator, layouts: []detect.Layout) void {
+fn freeLayouts(allocator: std.mem.Allocator, layouts: []const detect.Layout) void {
     for (layouts) |layout| layout.deinit(allocator);
     allocator.free(layouts);
 }

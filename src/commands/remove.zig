@@ -3,6 +3,7 @@ const Context = @import("../context.zig").Context;
 const cli = @import("../cli.zig");
 const agents = @import("../core/agents.zig");
 const config = @import("../core/config.zig");
+const io_util = @import("io.zig");
 const links = @import("../core/links.zig");
 const manifest = @import("../core/manifest.zig");
 const paths = @import("../core/paths.zig");
@@ -40,21 +41,21 @@ fn removeOne(ctx: *Context, agent_list: []const agents.Agent, query: []const u8)
     defer ctx.allocator.free(linked_indices);
 
     if (linked_indices.len == 0) {
-        try std.Io.File.writeStreamingAll(.stderr(), ctx.io, "warning: no linked skills match ");
-        try std.Io.File.writeStreamingAll(.stderr(), ctx.io, query);
-        try std.Io.File.writeStreamingAll(.stderr(), ctx.io, "\n");
+        try io_util.eprintln(ctx.io, &.{ "warning: no linked skills match ", query });
         return false;
     }
 
     const selected = try chooseMatches(ctx, linked_indices, query);
     defer ctx.allocator.free(selected);
 
+    // Deduplicate plugin CLI removes across all selected skills before per-skill cleanup.
+    try removePluginLinksDedup(ctx, linked_indices, selected, agent_list);
+
     var changed = false;
     for (linked_indices, 0..) |index, i| {
         if (!selected[i]) continue;
         const skill = &ctx.manifest.skills[index];
         try links.removeRecordedForAgents(ctx.io, skill.links, agent_list);
-        try removePluginLinks(ctx, skill, agent_list);
         try printRemovedLinks(ctx.io, skill.name, skill.links, agent_list);
         try dropRecordedLinks(ctx.allocator, skill, agent_list);
         changed = true;
@@ -115,15 +116,12 @@ fn chooseMatches(ctx: *Context, indices: []const usize, query: []const u8) ![]bo
         var number: [32]u8 = undefined;
         const number_text = try std.fmt.bufPrint(&number, "  {d}. ", .{i + 1});
         try std.Io.File.writeStreamingAll(.stdout(), ctx.io, number_text);
-        try std.Io.File.writeStreamingAll(.stdout(), ctx.io, skill.name);
-        try std.Io.File.writeStreamingAll(.stdout(), ctx.io, " from ");
-        try std.Io.File.writeStreamingAll(.stdout(), ctx.io, skill.project);
-        try std.Io.File.writeStreamingAll(.stdout(), ctx.io, "\n");
+        try io_util.println(ctx.io, &.{ skill.name, " from ", skill.project });
     }
     try std.Io.File.writeStreamingAll(.stdout(), ctx.io, "Choose numbers to remove, Enter for all, or n to cancel: ");
 
     var buf: [256]u8 = undefined;
-    const answer = try readPromptLine(ctx.io, &buf);
+    const answer = try io_util.readPromptLine(ctx.io, &buf);
     if (answer.len == 0) {
         @memset(selected, true);
         return selected;
@@ -144,23 +142,6 @@ fn chooseMatches(ctx: *Context, indices: []const usize, query: []const u8) ![]bo
     return selected;
 }
 
-
-fn readPromptLine(io: std.Io, buf: []u8) ![]const u8 {
-    var len: usize = 0;
-    while (true) {
-        var byte: [1]u8 = undefined;
-        const n = std.Io.File.readStreaming(.stdin(), io, &.{byte[0..]}) catch |err| switch (err) {
-            error.EndOfStream => return std.mem.trim(u8, buf[0..len], " \t\r\n"),
-            else => return err,
-        };
-        if (n == 0) return std.mem.trim(u8, buf[0..len], " \t\r\n");
-        if (byte[0] == '\n') return std.mem.trim(u8, buf[0..len], " \t\r\n");
-        if (len == buf.len) return error.InputTooLong;
-        buf[len] = byte[0];
-        len += 1;
-    }
-}
-
 fn printRemovedLinks(
     io: std.Io,
     name: []const u8,
@@ -173,25 +154,18 @@ fn printRemovedLinks(
     }
 
     if (count == 0) {
-        try std.Io.File.writeStreamingAll(.stdout(), io, "No links changed for ");
-        try std.Io.File.writeStreamingAll(.stdout(), io, name);
-        try std.Io.File.writeStreamingAll(.stdout(), io, "\n");
+        try io_util.println(io, &.{ "No links changed for ", name });
         return;
     }
 
-    try std.Io.File.writeStreamingAll(.stdout(), io, "Removed ");
-    try std.Io.File.writeStreamingAll(.stdout(), io, name);
-    try std.Io.File.writeStreamingAll(.stdout(), io, " from:\n");
+    try io_util.println(io, &.{ "Removed ", name, " from:" });
     for (recorded_links) |link| {
         if (!matchesAgentLink(agent_list, link)) continue;
-        try std.Io.File.writeStreamingAll(.stdout(), io, "  - ");
-        try std.Io.File.writeStreamingAll(.stdout(), io, link.agent);
-        try std.Io.File.writeStreamingAll(.stdout(), io, ": ");
-        switch (link.kind) {
-            .git => try std.Io.File.writeStreamingAll(.stdout(), io, link.path),
-            .marketplace, .plugin => try std.Io.File.writeStreamingAll(.stdout(), io, link.package),
-        }
-        try std.Io.File.writeStreamingAll(.stdout(), io, "\n");
+        const display = switch (link.kind) {
+            .git => link.path,
+            .marketplace, .plugin => link.package,
+        };
+        try io_util.println(io, &.{ "  - ", link.agent, ": ", display });
     }
 }
 
@@ -212,33 +186,40 @@ fn dropRecordedLinks(allocator: std.mem.Allocator, skill: *manifest.Skill, agent
     skill.links = new_links;
 }
 
-fn removePluginLinks(ctx: *Context, skill: *manifest.Skill, agent_list: []const agents.Agent) !void {
-    for (skill.links) |link| {
-        if (link.kind == .git) continue;
-        if (!agentInList(agent_list, link.agent)) continue;
-        const backend = findAgentPlugin(agent_list, link.agent) orelse continue;
-        plugins.remove(ctx.allocator, ctx.io, backend, link.package) catch |err| {
-            try std.Io.File.writeStreamingAll(.stderr(), ctx.io, "warning: failed to remove plugin ");
-            try std.Io.File.writeStreamingAll(.stderr(), ctx.io, link.package);
-            try std.Io.File.writeStreamingAll(.stderr(), ctx.io, " for ");
-            try std.Io.File.writeStreamingAll(.stderr(), ctx.io, link.agent);
-            try std.Io.File.writeStreamingAll(.stderr(), ctx.io, ": ");
-            try std.Io.File.writeStreamingAll(.stderr(), ctx.io, @errorName(err));
-            try std.Io.File.writeStreamingAll(.stderr(), ctx.io, "\n");
-        };
+fn removePluginLinksDedup(
+    ctx: *Context,
+    indices: []const usize,
+    selected: []const bool,
+    agent_list: []const agents.Agent,
+) !void {
+    var seen: std.StringHashMap(void) = .init(ctx.allocator);
+    defer {
+        var it = seen.keyIterator();
+        while (it.next()) |k_ptr| {
+            ctx.allocator.free(k_ptr.*);
+        }
+        seen.deinit();
     }
-}
 
-fn agentInList(agent_list: []const agents.Agent, agent_id: []const u8) bool {
-    for (agent_list) |agent| {
-        if (std.mem.eql(u8, agent.id, agent_id)) return true;
-    }
-    return false;
-}
+    for (indices, 0..) |index, i| {
+        if (!selected[i]) continue;
+        for (ctx.manifest.skills[index].links) |link| {
+            if (link.kind == .git) continue;
+            if (!agents.containsId(agent_list, link.agent)) continue;
+            const backend = agents.pluginBackend(agent_list, link.agent) orelse continue;
+            const key = try std.fmt.allocPrint(ctx.allocator, "{s}\x00{s}", .{ link.agent, link.package });
 
-fn findAgentPlugin(agent_list: []const agents.Agent, agent_id: []const u8) ?[]const u8 {
-    for (agent_list) |agent| {
-        if (std.mem.eql(u8, agent.id, agent_id)) return agent.plugin;
+            const entry = try seen.getOrPut(key);
+            if (entry.found_existing)
+                ctx.allocator.free(key)
+            else
+                plugins.remove(ctx.allocator, ctx.io, backend, link.package) catch |err| {
+                    try io_util.eprintln(ctx.io, &.{
+                        "warning: failed to remove plugin ", link.package,
+                        " for ",                             link.agent,
+                        ": ",                                @errorName(err),
+                    });
+                };
+        }
     }
-    return null;
 }

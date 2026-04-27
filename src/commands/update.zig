@@ -4,6 +4,7 @@ const agents = @import("../core/agents.zig");
 const config = @import("../core/config.zig");
 const detect = @import("../core/detect.zig");
 const git = @import("../core/git.zig");
+const io_util = @import("io.zig");
 const links = @import("../core/links.zig");
 const manifest = @import("../core/manifest.zig");
 const paths = @import("../core/paths.zig");
@@ -48,18 +49,15 @@ fn updateOne(ctx: *Context, cfg: config.Config, index: usize) !void {
                 const info = plugins.PluginInfo{
                     .kind = link.kind,
                     .name = try ctx.allocator.dupe(u8, link.package),
-                    .marketplace = try ctx.allocator.dupe(u8, link.marketplace),
                     .scope = try ctx.allocator.dupe(u8, link.scope),
                 };
                 defer info.deinit(ctx.allocator);
                 plugins.update(ctx.allocator, ctx.io, backend, info) catch |err| {
-                    try std.Io.File.writeStreamingAll(.stderr(), ctx.io, "warning: failed to update plugin ");
-                    try std.Io.File.writeStreamingAll(.stderr(), ctx.io, link.package);
-                    try std.Io.File.writeStreamingAll(.stderr(), ctx.io, " for ");
-                    try std.Io.File.writeStreamingAll(.stderr(), ctx.io, link.agent);
-                    try std.Io.File.writeStreamingAll(.stderr(), ctx.io, ": ");
-                    try std.Io.File.writeStreamingAll(.stderr(), ctx.io, @errorName(err));
-                    try std.Io.File.writeStreamingAll(.stderr(), ctx.io, "\n");
+                    try io_util.eprintln(ctx.io, &.{
+                        "warning: failed to update plugin ", link.package,
+                        " for ",                             link.agent,
+                        ": ",                                @errorName(err),
+                    });
                 };
             },
         }
@@ -140,15 +138,9 @@ fn updateOne(ctx: *Context, cfg: config.Config, index: usize) !void {
 fn printUpdateResult(io: std.Io, name: []const u8, old_commit: []const u8, new_commit: []const u8) !void {
     try std.Io.File.writeStreamingAll(.stdout(), io, name);
     if (std.mem.eql(u8, old_commit, new_commit)) {
-        try std.Io.File.writeStreamingAll(.stdout(), io, "  up to date (");
-        try std.Io.File.writeStreamingAll(.stdout(), io, new_commit[0..@min(7, new_commit.len)]);
-        try std.Io.File.writeStreamingAll(.stdout(), io, ")\n");
+        try io_util.println(io, &.{ "  up to date (", new_commit[0..@min(7, new_commit.len)], ")" });
     } else {
-        try std.Io.File.writeStreamingAll(.stdout(), io, "  ");
-        try std.Io.File.writeStreamingAll(.stdout(), io, old_commit[0..@min(7, old_commit.len)]);
-        try std.Io.File.writeStreamingAll(.stdout(), io, " -> ");
-        try std.Io.File.writeStreamingAll(.stdout(), io, new_commit[0..@min(7, new_commit.len)]);
-        try std.Io.File.writeStreamingAll(.stdout(), io, "\n");
+        try io_util.println(io, &.{ "  ", old_commit[0..@min(7, old_commit.len)], " -> ", new_commit[0..@min(7, new_commit.len)] });
     }
 }
 

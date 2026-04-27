@@ -327,7 +327,6 @@ pub fn newPluginLink(
     agent: []const u8,
     kind: Kind,
     package: []const u8,
-    marketplace: []const u8,
     scope: []const u8,
 ) !Link {
     return .{
@@ -336,7 +335,7 @@ pub fn newPluginLink(
         .target = try allocator.dupe(u8, ""),
         .kind = kind,
         .package = try allocator.dupe(u8, package),
-        .marketplace = try allocator.dupe(u8, marketplace),
+        .marketplace = try allocator.dupe(u8, ""),
         .scope = try allocator.dupe(u8, scope),
     };
 }
@@ -399,13 +398,13 @@ test "find project" {
     try std.testing.expectEqualStrings("", link.package);
 }
 
-test "plugin link stores package marketplace and scope" {
+test "plugin link stores package and scope" {
     const allocator = std.testing.allocator;
-    const link = try newPluginLink(allocator, "claude", .plugin, "superpowers", "superpowers-dev", "local");
+    const link = try newPluginLink(allocator, "claude", .plugin, "superpowers", "local");
     defer link.deinit(allocator);
     try std.testing.expectEqual(Kind.plugin, link.kind);
     try std.testing.expectEqualStrings("", link.path);
     try std.testing.expectEqualStrings("superpowers", link.package);
-    try std.testing.expectEqualStrings("superpowers-dev", link.marketplace);
+    try std.testing.expectEqualStrings("", link.marketplace);
     try std.testing.expectEqualStrings("local", link.scope);
 }

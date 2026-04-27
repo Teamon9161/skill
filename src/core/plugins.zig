@@ -6,12 +6,10 @@ pub const Kind = manifest.Kind;
 pub const PluginInfo = struct {
     kind: Kind,
     name: []const u8,
-    marketplace: []const u8,
     scope: []const u8,
 
     pub fn deinit(self: PluginInfo, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
-        allocator.free(self.marketplace);
         allocator.free(self.scope);
     }
 };
@@ -40,7 +38,6 @@ pub fn detect(allocator: std.mem.Allocator, io: std.Io, plugin_dir_name: []const
         return .{
             .kind = if (is_marketplace) .marketplace else .plugin,
             .name = json.name,
-            .marketplace = "",
             .scope = json.scope orelse "",
         };
     } else |_| {}
@@ -48,12 +45,7 @@ pub fn detect(allocator: std.mem.Allocator, io: std.Io, plugin_dir_name: []const
     if (is_marketplace) {
         if (readMarketplaceJson(allocator, io, marketplace_path)) |name_opt| {
             if (name_opt) |name| {
-                return .{
-                    .kind = .marketplace,
-                    .name = name,
-                    .marketplace = "",
-                    .scope = "",
-                };
+                return .{ .kind = .marketplace, .name = name, .scope = "" };
             }
         } else |_| {}
     }
@@ -69,12 +61,12 @@ fn readPluginJson(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !P
     defer allocator.free(bytes);
 
     var parsed = try std.json.parseFromSlice(PluginJson, allocator, bytes, .{ .ignore_unknown_fields = true });
-    const result = PluginJson{
-        .name = try allocator.dupe(u8, parsed.value.name),
-        .scope = if (parsed.value.scope) |s| try allocator.dupe(u8, s) else null,
-    };
-    parsed.deinit();
-    return result;
+    defer parsed.deinit();
+
+    const name = try allocator.dupe(u8, parsed.value.name);
+    errdefer allocator.free(name);
+    const scope = if (parsed.value.scope) |s| try allocator.dupe(u8, s) else null;
+    return .{ .name = name, .scope = scope };
 }
 
 fn readMarketplaceJson(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !?[]const u8 {
@@ -104,14 +96,13 @@ pub fn install(
     io: std.Io,
     backend: []const u8,
     info: PluginInfo,
-    owner: []const u8,
-    repo: []const u8,
+    repo_path: []const u8,
 ) !void {
     if (info.kind == .marketplace) {
-        const mp_id = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ owner, repo });
-        defer allocator.free(mp_id);
+        // const mp_id = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ owner, repo });
+        // defer allocator.free(mp_id);
 
-        const result = try runPluginCli(allocator, io, backend, &.{ "plugin", "marketplace", "add", mp_id }, null);
+        const result = try runPluginCli(allocator, io, backend, &.{ "plugin", "marketplace", "add", repo_path }, null);
         result.deinit(allocator);
     }
 

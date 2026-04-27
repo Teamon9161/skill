@@ -1,4 +1,5 @@
 const std = @import("std");
+const print = @import("../commands/io.zig").println;
 
 pub fn check(allocator: std.mem.Allocator, io: std.Io) !void {
     var result = run(allocator, io, &.{ "git", "--version" }, null) catch |err| switch (err) {
@@ -8,10 +9,10 @@ pub fn check(allocator: std.mem.Allocator, io: std.Io) !void {
     result.deinit(allocator);
 }
 
-pub fn clone(allocator: std.mem.Allocator, io: std.Io, url: []const u8, dest: []const u8) !void {
-    var result = try run(allocator, io, &.{ "git", "clone", "--depth=1", "--single-branch", url, dest }, null);
-    result.deinit(allocator);
-}
+// pub fn clone(allocator: std.mem.Allocator, io: std.Io, url: []const u8, dest: []const u8) !void {
+//     var result = try run(allocator, io, &.{ "git", "clone", "--depth=1", "--single-branch", url, dest }, null);
+//     result.deinit(allocator);
+// }
 
 pub fn cloneAny(
     allocator: std.mem.Allocator,
@@ -21,7 +22,6 @@ pub fn cloneAny(
     timeout_seconds: u32,
 ) ![]const u8 {
     if (urls.len == 0) return error.GitFailed;
-
     for (urls) |url| {
         if (!try canAccess(allocator, io, url, timeout_seconds)) continue;
 
