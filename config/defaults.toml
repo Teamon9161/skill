@@ -21,7 +21,7 @@ skills = "skills"
 [aliases]
 ham = "@kromahlusenii-ops/ham"
 lark = "@larksuite/cli"
-duck-ext = "ficc@skills/duck-ext"
+duck-ext = "ficc@skills/duck_ext"
 dolphindb = "ficc@skills/dolphindb-claude"
 wiki = "ficc@skills/wiki"
 pybond = "ficc@skills/pybond"
