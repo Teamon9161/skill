@@ -15,6 +15,11 @@ fn line(allocator: std.mem.Allocator, skill: anytype) ![]const u8 {
     for (skill.links, 0..) |link, i| {
         if (i != 0) try links_buf.append(allocator, ',');
         try links_buf.appendSlice(allocator, link.agent);
+        switch (link.kind) {
+            .git => {},
+            .marketplace => try links_buf.appendSlice(allocator, "(mp)"),
+            .plugin => try links_buf.appendSlice(allocator, "(plugin)"),
+        }
     }
 
     return std.fmt.allocPrint(allocator, "{s} @{s}/{s} {s} links=[{s}] path={s}\n", .{

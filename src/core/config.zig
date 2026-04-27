@@ -20,12 +20,16 @@ pub const AgentDef = struct {
     label: []const u8,
     dir: []const u8,
     skills: []const u8,
+    plugin: ?[]const u8 = null,
+    plugin_dir: ?[]const u8 = null,
 
     pub fn deinit(self: AgentDef, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
         allocator.free(self.label);
         allocator.free(self.dir);
         allocator.free(self.skills);
+        if (self.plugin) |p| allocator.free(p);
+        if (self.plugin_dir) |d| allocator.free(d);
     }
 };
 
@@ -43,6 +47,7 @@ pub const Config = struct {
     sources: []Source = &.{},
     agents: []AgentDef = &.{},
     aliases: []Alias = &.{},
+    prefer_git: []const []const u8 = &.{},
 
     pub fn deinit(self: Config, allocator: std.mem.Allocator) void {
         for (self.sources) |source| source.deinit(allocator);
@@ -51,6 +56,7 @@ pub const Config = struct {
         allocator.free(self.agents);
         for (self.aliases) |alias| alias.deinit(allocator);
         allocator.free(self.aliases);
+        freeStringList(allocator, self.prefer_git);
     }
 };
 
@@ -63,6 +69,7 @@ pub fn load(
     var source_list: std.ArrayList(Source) = .empty;
     var agent_list: std.ArrayList(AgentDef) = .empty;
     var alias_list: std.ArrayList(Alias) = .empty;
+    var prefer_git: std.ArrayList([]const u8) = .empty;
     errdefer {
         for (source_list.items) |source| source.deinit(allocator);
         source_list.deinit(allocator);
@@ -70,16 +77,19 @@ pub fn load(
         agent_list.deinit(allocator);
         for (alias_list.items) |alias| alias.deinit(allocator);
         alias_list.deinit(allocator);
+        for (prefer_git.items) |item| allocator.free(item);
+        prefer_git.deinit(allocator);
     }
 
-    try parseTomlSubset(allocator, build_options.default_config, &source_list, &agent_list, &alias_list);
-    try parseFileIfExists(allocator, io, config_path, &source_list, &agent_list, &alias_list);
-    try parseFileIfExists(allocator, io, legacy_sources_path, &source_list, &agent_list, &alias_list);
+    try parseTomlSubset(allocator, build_options.default_config, &source_list, &agent_list, &alias_list, &prefer_git);
+    try parseFileIfExists(allocator, io, config_path, &source_list, &agent_list, &alias_list, &prefer_git);
+    try parseFileIfExists(allocator, io, legacy_sources_path, &source_list, &agent_list, &alias_list, &prefer_git);
 
     return .{
         .sources = try source_list.toOwnedSlice(allocator),
         .agents = try agent_list.toOwnedSlice(allocator),
         .aliases = try alias_list.toOwnedSlice(allocator),
+        .prefer_git = try prefer_git.toOwnedSlice(allocator),
     };
 }
 
@@ -90,11 +100,27 @@ pub fn findSource(list: []const Source, label: []const u8) ?Source {
     return null;
 }
 
+pub fn findAgent(cfg: Config, id: []const u8) ?AgentDef {
+    for (cfg.agents) |agent| {
+        if (std.mem.eql(u8, agent.id, id)) return agent;
+    }
+    return null;
+}
+
 pub fn findAlias(list: []const Alias, name: []const u8) ?Alias {
     for (list) |alias| {
         if (std.mem.eql(u8, alias.name, name)) return alias;
     }
     return null;
+}
+
+pub fn prefersGit(cfg: Config, owner: []const u8, project: []const u8) bool {
+    for (cfg.prefer_git) |entry| {
+        const text = if (std.mem.startsWith(u8, entry, "@")) entry[1..] else entry;
+        const slash = std.mem.indexOfScalar(u8, text, '/') orelse continue;
+        if (std.mem.eql(u8, text[0..slash], owner) and std.mem.eql(u8, text[slash + 1 ..], project)) return true;
+    }
+    return false;
 }
 
 pub fn expandUrl(
@@ -167,13 +193,14 @@ fn parseFileIfExists(
     source_list: *std.ArrayList(Source),
     agent_list: *std.ArrayList(AgentDef),
     alias_list: *std.ArrayList(Alias),
+    prefer_git: *std.ArrayList([]const u8),
 ) !void {
     const bytes = std.Io.Dir.readFileAlloc(.cwd(), io, path, allocator, .limited(1024 * 1024)) catch |err| switch (err) {
         error.FileNotFound => return,
         else => return err,
     };
     defer allocator.free(bytes);
-    try parseTomlSubset(allocator, bytes, source_list, agent_list, alias_list);
+    try parseTomlSubset(allocator, bytes, source_list, agent_list, alias_list, prefer_git);
 }
 
 fn parseTomlSubset(
@@ -182,6 +209,7 @@ fn parseTomlSubset(
     source_list: *std.ArrayList(Source),
     agent_list: *std.ArrayList(AgentDef),
     alias_list: *std.ArrayList(Alias),
+    prefer_git: *std.ArrayList([]const u8),
 ) !void {
     var parser = toml.Parser(toml.Table).init(allocator);
     defer parser.deinit();
@@ -189,7 +217,7 @@ fn parseTomlSubset(
     const parsed = parser.parseString(bytes) catch return error.InvalidConfig;
     defer parsed.deinit();
 
-    try mergeTomlRoot(allocator, parsed.value, source_list, agent_list, alias_list);
+    try mergeTomlRoot(allocator, parsed.value, source_list, agent_list, alias_list, prefer_git);
 }
 
 fn mergeTomlRoot(
@@ -198,6 +226,7 @@ fn mergeTomlRoot(
     source_list: *std.ArrayList(Source),
     agent_list: *std.ArrayList(AgentDef),
     alias_list: *std.ArrayList(Alias),
+    prefer_git: *std.ArrayList([]const u8),
 ) !void {
     if (root.get("sources")) |value| switch (value) {
         .table => |table| try mergeSources(allocator, table, source_list),
@@ -211,6 +240,9 @@ fn mergeTomlRoot(
         .table => |table| try mergeAliases(allocator, table, alias_list),
         else => return error.InvalidConfig,
     };
+    if (root.get("prefer_git")) |value| {
+        try appendOwnedStringArray(allocator, prefer_git, value);
+    }
 }
 
 fn mergeSources(
@@ -275,6 +307,14 @@ fn mergeAgents(
             allocator.free(agent.skills);
             agent.skills = try allocator.dupe(u8, try expectString(value));
         }
+        if (agent_table.get("plugin")) |value| {
+            if (agent.plugin) |p| allocator.free(p);
+            agent.plugin = try allocator.dupe(u8, try expectString(value));
+        }
+        if (agent_table.get("plugin_dir")) |value| {
+            if (agent.plugin_dir) |d| allocator.free(d);
+            agent.plugin_dir = try allocator.dupe(u8, try expectString(value));
+        }
     }
 }
 
@@ -321,6 +361,16 @@ fn appendStringArray(allocator: std.mem.Allocator, out: *std.ArrayList([]const u
     };
     for (array.items) |item| {
         try out.append(allocator, try expectString(item));
+    }
+}
+
+fn appendOwnedStringArray(allocator: std.mem.Allocator, out: *std.ArrayList([]const u8), value: toml.Value) !void {
+    const array = switch (value) {
+        .array => |array| array,
+        else => return error.InvalidConfig,
+    };
+    for (array.items) |item| {
+        try out.append(allocator, try allocator.dupe(u8, try expectString(item)));
     }
 }
 
@@ -425,6 +475,7 @@ test "merge config sources and agents" {
     var source_list: std.ArrayList(Source) = .empty;
     var agent_list: std.ArrayList(AgentDef) = .empty;
     var alias_list: std.ArrayList(Alias) = .empty;
+    var prefer_git: std.ArrayList([]const u8) = .empty;
     defer {
         for (source_list.items) |source| source.deinit(allocator);
         source_list.deinit(allocator);
@@ -432,9 +483,13 @@ test "merge config sources and agents" {
         agent_list.deinit(allocator);
         for (alias_list.items) |alias| alias.deinit(allocator);
         alias_list.deinit(allocator);
+        for (prefer_git.items) |item| allocator.free(item);
+        prefer_git.deinit(allocator);
     }
 
     try parseTomlSubset(allocator,
+        \\prefer_git = ["obra/superpowers", "@team/repo"]
+        \\
         \\[sources.gitlab]
         \\timeout = 3
         \\urls = [
@@ -453,7 +508,7 @@ test "merge config sources and agents" {
         \\[aliases.local-demo]
         \\value = "../demo-skill"
         \\
-    , &source_list, &agent_list, &alias_list);
+    , &source_list, &agent_list, &alias_list, &prefer_git);
 
     const gitlab = findSource(source_list.items, "gitlab").?;
     try std.testing.expectEqual(@as(u32, 3), gitlab.connect_timeout_seconds);
@@ -465,4 +520,9 @@ test "merge config sources and agents" {
     try std.testing.expectEqualStrings(".cursor", agent_list.items[0].dir);
     try std.testing.expectEqualStrings("@kromahlusenii-ops/ham", findAlias(alias_list.items, "ham").?.value);
     try std.testing.expectEqualStrings("../demo-skill", findAlias(alias_list.items, "local-demo").?.value);
+
+    const cfg = Config{ .prefer_git = prefer_git.items };
+    try std.testing.expect(prefersGit(cfg, "obra", "superpowers"));
+    try std.testing.expect(prefersGit(cfg, "team", "repo"));
+    try std.testing.expect(!prefersGit(cfg, "other", "repo"));
 }

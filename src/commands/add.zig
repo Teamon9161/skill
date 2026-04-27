@@ -8,6 +8,7 @@ const git = @import("../core/git.zig");
 const links = @import("../core/links.zig");
 const manifest = @import("../core/manifest.zig");
 const paths = @import("../core/paths.zig");
+const plugins = @import("../core/plugins.zig");
 const source_spec = @import("../core/source_spec.zig");
 
 pub fn run(ctx: *Context, target: cli.AddTarget) !void {
@@ -31,7 +32,7 @@ pub fn run(ctx: *Context, target: cli.AddTarget) !void {
         const spec = try source_spec.parseAddSpec(ctx.allocator, input, cfg.sources);
         defer spec.deinit(ctx.allocator);
         switch (spec) {
-            .remote => |remote| try addRemote(ctx, remote, agent_list),
+            .remote => |remote| try addRemote(ctx, remote, agent_list, cfg, target.force_git),
             .local => |local| try addLocal(ctx, local, agent_list),
         }
     }
@@ -52,7 +53,7 @@ fn localDirExists(io: std.Io, name: []const u8) bool {
     return true;
 }
 
-fn addRemote(ctx: *Context, spec: source_spec.RemoteSpec, agent_list: []const agents.Agent) !void {
+fn addRemote(ctx: *Context, spec: source_spec.RemoteSpec, agent_list: []const agents.Agent, cfg: config.Config, force_git: bool) !void {
     try git.check(ctx.allocator, ctx.io);
     try std.Io.Dir.createDirPath(.cwd(), ctx.io, ctx.paths.repos);
 
@@ -65,8 +66,14 @@ fn addRemote(ctx: *Context, spec: source_spec.RemoteSpec, agent_list: []const ag
         try git.cloneAny(ctx.allocator, ctx.io, spec.urls, repo_path, spec.connect_timeout_seconds);
     defer ctx.allocator.free(selected_source);
 
-    try installRemoteLayouts(ctx, spec, repo_path, selected_source, agent_list);
+    try installRemoteLayouts(ctx, spec, repo_path, selected_source, agent_list, cfg, force_git);
 }
+
+const AgentPlan = struct {
+    agent: agents.Agent,
+    kind: manifest.Kind,
+    info: ?plugins.PluginInfo,
+};
 
 fn installRemoteLayouts(
     ctx: *Context,
@@ -74,6 +81,8 @@ fn installRemoteLayouts(
     repo_path: []const u8,
     selected_source: []const u8,
     agent_list: []const agents.Agent,
+    cfg: config.Config,
+    force_git: bool,
 ) !void {
     const base_path = try sourceBasePath(ctx.allocator, repo_path, spec.source_path);
     defer ctx.allocator.free(base_path);
@@ -88,18 +97,183 @@ fn installRemoteLayouts(
     defer ctx.allocator.free(commit);
 
     for (layouts) |layout| {
-        try installLayout(ctx, .{
-            .name = layout.name,
-            .owner = spec.owner,
-            .project = spec.repo,
-            .source_label = spec.source_label,
-            .source_path = spec.source_path,
-            .source = selected_source,
-            .storage_path = repo_path,
-            .branch = branch,
-            .commit = commit,
-        }, layout.target, agent_list);
+        const plans = try detectAgentPlans(ctx.allocator, ctx.io, base_path, agent_list, spec, cfg, force_git);
+        defer freeAgentPlans(ctx.allocator, plans);
+
+        try printInstallPlan(ctx.io, layout.name, spec, plans, force_git);
+
+        // Separate git and plugin agents
+        var git_agents: std.ArrayList(agents.Agent) = .empty;
+        defer git_agents.deinit(ctx.allocator);
+
+        for (plans) |plan| {
+            if (plan.kind == .git) {
+                try git_agents.append(ctx.allocator, plan.agent);
+            }
+        }
+
+        // Install git agents
+        if (git_agents.items.len > 0) {
+            try installLayout(ctx, .{
+                .name = layout.name,
+                .owner = spec.owner,
+                .project = spec.repo,
+                .source_label = spec.source_label,
+                .source_path = spec.source_path,
+                .source = selected_source,
+                .storage_path = repo_path,
+                .branch = branch,
+                .commit = commit,
+            }, layout.target, git_agents.items);
+        }
+
+        // Install plugin agents
+        for (plans) |plan| {
+            if (plan.kind == .git) continue;
+            try installPluginForAgent(ctx, spec, repo_path, selected_source, branch, commit, layout.name, plan);
+        }
+
+        // Delete cloned repo if no agent used git
+        if (git_agents.items.len == 0) {
+            deleteRepo(ctx.io, repo_path);
+        }
     }
+}
+
+fn detectAgentPlans(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    base_path: []const u8,
+    agent_list: []const agents.Agent,
+    spec: source_spec.RemoteSpec,
+    cfg: config.Config,
+    force_git: bool,
+) ![]AgentPlan {
+    var plans = try allocator.alloc(AgentPlan, agent_list.len);
+    errdefer allocator.free(plans);
+
+    for (agent_list, 0..) |agent, i| {
+        const use_git = force_git or config.prefersGit(cfg, spec.owner, spec.repo);
+        const info = if (!use_git and agent.plugin != null)
+            try plugins.detect(allocator, io, agent.plugin_dir.?, base_path)
+        else
+            null;
+        plans[i] = .{
+            .agent = agent,
+            .kind = if (info) |pi| pi.kind else .git,
+            .info = info,
+        };
+    }
+
+    return plans;
+}
+
+fn installPluginForAgent(
+    ctx: *Context,
+    spec: source_spec.RemoteSpec,
+    repo_path: []const u8,
+    selected_source: []const u8,
+    branch: []const u8,
+    commit: []const u8,
+    name: []const u8,
+    plan: AgentPlan,
+) !void {
+    const pi = plan.info.?;
+    try plugins.install(ctx.allocator, ctx.io, plan.agent.plugin.?, pi, spec.owner, spec.repo);
+
+    const link = try manifest.newPluginLink(ctx.allocator, plan.agent.id, pi.kind, pi.name, pi.marketplace, pi.scope);
+    errdefer link.deinit(ctx.allocator);
+
+    // Find or create skill entry
+    const existing = manifest.findIdentity(
+        ctx.manifest,
+        spec.source_label,
+        spec.owner,
+        spec.repo,
+        spec.source_path,
+        name,
+    );
+
+    const index = if (existing) |i| i else blk: {
+        const skill = try manifest.newSkill(
+            ctx.allocator,
+            name,
+            spec.owner,
+            spec.repo,
+            spec.source_label,
+            spec.source_path,
+            selected_source,
+            repo_path,
+        );
+        try manifest.appendSkill(ctx.allocator, &ctx.manifest, skill);
+        break :blk ctx.manifest.skills.len - 1;
+    };
+
+    const skill = &ctx.manifest.skills[index];
+    ctx.allocator.free(skill.source);
+    skill.source = try ctx.allocator.dupe(u8, selected_source);
+    try manifest.setGit(ctx.allocator, skill, branch, commit);
+
+    const agent_slice = [_]agents.Agent{plan.agent};
+    var links_array = try ctx.allocator.alloc(manifest.Link, 1);
+    links_array[0] = link;
+    try manifest.replaceLinksForAgents(ctx.allocator, skill, &agent_slice, links_array);
+    ctx.allocator.free(links_array);
+
+    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, "Installed ");
+    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, name);
+    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, " for ");
+    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, plan.agent.id);
+    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, " via plugin (");
+    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, @tagName(pi.kind));
+    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, ")\n");
+}
+
+fn printInstallPlan(
+    io: std.Io,
+    name: []const u8,
+    _: source_spec.RemoteSpec,
+    plans: []AgentPlan,
+    force_git: bool,
+) !void {
+    const all_git = for (plans) |p| {
+        if (p.kind != .git) break false;
+    } else true;
+    if (all_git and !force_git) return;
+
+    try std.Io.File.writeStreamingAll(.stdout(), io, "Installing ");
+    try std.Io.File.writeStreamingAll(.stdout(), io, name);
+    try std.Io.File.writeStreamingAll(.stdout(), io, ":\n");
+    for (plans) |plan| {
+        try std.Io.File.writeStreamingAll(.stdout(), io, "  ");
+        try std.Io.File.writeStreamingAll(.stdout(), io, plan.agent.id);
+        try std.Io.File.writeStreamingAll(.stdout(), io, "  \xE2\x86\x92 ");
+        switch (plan.kind) {
+            .git => {
+                if (force_git) {
+                    try std.Io.File.writeStreamingAll(.stdout(), io, "git  (--git)\n");
+                } else {
+                    try std.Io.File.writeStreamingAll(.stdout(), io, "git\n");
+                }
+            },
+            .marketplace => try std.Io.File.writeStreamingAll(.stdout(), io, "marketplace\n"),
+            .plugin => try std.Io.File.writeStreamingAll(.stdout(), io, "plugin\n"),
+        }
+    }
+    if (!force_git) {
+        try std.Io.File.writeStreamingAll(.stdout(), io, "Tip: use --git to force symlink for all agents.\n");
+    }
+}
+
+fn freeAgentPlans(allocator: std.mem.Allocator, plans: []AgentPlan) void {
+    for (plans) |plan| {
+        if (plan.info) |pi| pi.deinit(allocator);
+    }
+    allocator.free(plans);
+}
+
+fn deleteRepo(io: std.Io, repo_path: []const u8) void {
+    std.Io.Dir.deleteTree(.cwd(), io, repo_path) catch {};
 }
 
 fn addLocal(ctx: *Context, spec: source_spec.LocalSpec, agent_list: []const agents.Agent) !void {

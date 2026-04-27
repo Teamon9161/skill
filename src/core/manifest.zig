@@ -38,15 +38,24 @@ pub const Skill = struct {
     }
 };
 
+pub const Kind = enum { git, marketplace, plugin };
+
 pub const Link = struct {
     agent: []const u8,
     path: []const u8,
     target: []const u8,
+    kind: Kind = .git,
+    package: []const u8 = "",
+    marketplace: []const u8 = "",
+    scope: []const u8 = "",
 
     pub fn deinit(self: Link, allocator: std.mem.Allocator) void {
         allocator.free(self.agent);
         allocator.free(self.path);
         allocator.free(self.target);
+        allocator.free(self.package);
+        allocator.free(self.marketplace);
+        allocator.free(self.scope);
     }
 };
 
@@ -72,6 +81,10 @@ const DiskLink = struct {
     agent: []const u8,
     path: []const u8,
     target: []const u8,
+    kind: ?[]const u8 = null,
+    package: ?[]const u8 = null,
+    marketplace: ?[]const u8 = null,
+    scope: ?[]const u8 = null,
 };
 
 pub fn load(allocator: std.mem.Allocator, io: std.Io, path: []const u8) !Manifest {
@@ -234,6 +247,7 @@ pub fn removeLinkPathFromOthers(
     agent: []const u8,
     path: []const u8,
 ) !void {
+    if (path.len == 0) return;
     for (value.skills, 0..) |*skill, i| {
         if (i == owner_index) continue;
 
@@ -302,14 +316,55 @@ pub fn newLink(allocator: std.mem.Allocator, agent: []const u8, path: []const u8
         .agent = try allocator.dupe(u8, agent),
         .path = try allocator.dupe(u8, path),
         .target = try allocator.dupe(u8, target),
+        .package = try allocator.dupe(u8, ""),
+        .marketplace = try allocator.dupe(u8, ""),
+        .scope = try allocator.dupe(u8, ""),
     };
+}
+
+pub fn newPluginLink(
+    allocator: std.mem.Allocator,
+    agent: []const u8,
+    kind: Kind,
+    package: []const u8,
+    marketplace: []const u8,
+    scope: []const u8,
+) !Link {
+    return .{
+        .agent = try allocator.dupe(u8, agent),
+        .path = try allocator.dupe(u8, ""),
+        .target = try allocator.dupe(u8, ""),
+        .kind = kind,
+        .package = try allocator.dupe(u8, package),
+        .marketplace = try allocator.dupe(u8, marketplace),
+        .scope = try allocator.dupe(u8, scope),
+    };
+}
+
+fn cloneLink(allocator: std.mem.Allocator, disk: DiskLink) !Link {
+    return .{
+        .agent = try allocator.dupe(u8, disk.agent),
+        .path = try allocator.dupe(u8, disk.path),
+        .target = try allocator.dupe(u8, disk.target),
+        .kind = parseKind(disk.kind),
+        .package = try allocator.dupe(u8, disk.package orelse ""),
+        .marketplace = try allocator.dupe(u8, disk.marketplace orelse ""),
+        .scope = try allocator.dupe(u8, disk.scope orelse ""),
+    };
+}
+
+fn parseKind(value: ?[]const u8) Kind {
+    const text = value orelse return .git;
+    if (std.mem.eql(u8, text, "marketplace")) return .marketplace;
+    if (std.mem.eql(u8, text, "plugin")) return .plugin;
+    return .git;
 }
 
 fn cloneSkill(allocator: std.mem.Allocator, disk: DiskSkill) !Skill {
     var links = try allocator.alloc(Link, disk.links.len);
     errdefer allocator.free(links);
     for (disk.links, 0..) |link, i| {
-        links[i] = try newLink(allocator, link.agent, link.path, link.target);
+        links[i] = try cloneLink(allocator, link);
     }
 
     return .{
@@ -334,4 +389,23 @@ test "find project" {
     try std.testing.expectEqual(@as(?usize, 0), findProject(m, "project"));
     try std.testing.expectEqual(@as(?usize, 0), findProject(m, "skill"));
     try std.testing.expectEqual(@as(?usize, null), findProject(m, "missing"));
+}
+
+ test "disk link kind defaults to git" {
+    const allocator = std.testing.allocator;
+    const link = try cloneLink(allocator, .{ .agent = "claude", .path = "/tmp/link", .target = "/tmp/target" });
+    defer link.deinit(allocator);
+    try std.testing.expectEqual(Kind.git, link.kind);
+    try std.testing.expectEqualStrings("", link.package);
+}
+
+test "plugin link stores package marketplace and scope" {
+    const allocator = std.testing.allocator;
+    const link = try newPluginLink(allocator, "claude", .plugin, "superpowers", "superpowers-dev", "local");
+    defer link.deinit(allocator);
+    try std.testing.expectEqual(Kind.plugin, link.kind);
+    try std.testing.expectEqualStrings("", link.path);
+    try std.testing.expectEqualStrings("superpowers", link.package);
+    try std.testing.expectEqualStrings("superpowers-dev", link.marketplace);
+    try std.testing.expectEqualStrings("local", link.scope);
 }

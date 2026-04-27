@@ -6,6 +6,7 @@ const config = @import("../core/config.zig");
 const links = @import("../core/links.zig");
 const manifest = @import("../core/manifest.zig");
 const paths = @import("../core/paths.zig");
+const plugins = @import("../core/plugins.zig");
 
 pub fn run(ctx: *Context, target: cli.Target) !void {
     const cfg = try config.load(ctx.allocator, ctx.io, ctx.paths.config, ctx.paths.sources);
@@ -53,6 +54,7 @@ fn removeOne(ctx: *Context, agent_list: []const agents.Agent, query: []const u8)
         if (!selected[i]) continue;
         const skill = &ctx.manifest.skills[index];
         try links.removeRecordedForAgents(ctx.io, skill.links, agent_list);
+        try removePluginLinks(ctx, skill, agent_list);
         try printRemovedLinks(ctx.io, skill.name, skill.links, agent_list);
         try dropRecordedLinks(ctx.allocator, skill, agent_list);
         changed = true;
@@ -72,13 +74,24 @@ fn filterLinkedMatches(
     for (indices) |index| {
         const skill = value.skills[index];
         for (skill.links) |link| {
-            if (!matchesAgentPath(agent_list, link.agent, link.path)) continue;
+            if (!matchesAgentLink(agent_list, link)) continue;
             try out.append(allocator, index);
             break;
         }
     }
 
     return out.toOwnedSlice(allocator);
+}
+
+fn matchesAgentLink(agent_list: []const agents.Agent, link: manifest.Link) bool {
+    for (agent_list) |agent| {
+        if (!std.mem.eql(u8, agent.id, link.agent)) continue;
+        return switch (link.kind) {
+            .git => paths.isInside(agent.skills, link.path),
+            .marketplace, .plugin => true,
+        };
+    }
+    return false;
 }
 
 fn chooseMatches(ctx: *Context, indices: []const usize, query: []const u8) ![]bool {
@@ -156,7 +169,7 @@ fn printRemovedLinks(
 ) !void {
     var count: usize = 0;
     for (recorded_links) |link| {
-        if (matchesAgentPath(agent_list, link.agent, link.path)) count += 1;
+        if (matchesAgentLink(agent_list, link)) count += 1;
     }
 
     if (count == 0) {
@@ -170,11 +183,14 @@ fn printRemovedLinks(
     try std.Io.File.writeStreamingAll(.stdout(), io, name);
     try std.Io.File.writeStreamingAll(.stdout(), io, " from:\n");
     for (recorded_links) |link| {
-        if (!matchesAgentPath(agent_list, link.agent, link.path)) continue;
+        if (!matchesAgentLink(agent_list, link)) continue;
         try std.Io.File.writeStreamingAll(.stdout(), io, "  - ");
         try std.Io.File.writeStreamingAll(.stdout(), io, link.agent);
         try std.Io.File.writeStreamingAll(.stdout(), io, ": ");
-        try std.Io.File.writeStreamingAll(.stdout(), io, link.path);
+        switch (link.kind) {
+            .git => try std.Io.File.writeStreamingAll(.stdout(), io, link.path),
+            .marketplace, .plugin => try std.Io.File.writeStreamingAll(.stdout(), io, link.package),
+        }
         try std.Io.File.writeStreamingAll(.stdout(), io, "\n");
     }
 }
@@ -184,7 +200,7 @@ fn dropRecordedLinks(allocator: std.mem.Allocator, skill: *manifest.Skill, agent
     errdefer kept.deinit(allocator);
 
     for (skill.links) |link| {
-        if (matchesAgentPath(agent_list, link.agent, link.path)) {
+        if (matchesAgentLink(agent_list, link)) {
             link.deinit(allocator);
         } else {
             try kept.append(allocator, link);
@@ -196,9 +212,33 @@ fn dropRecordedLinks(allocator: std.mem.Allocator, skill: *manifest.Skill, agent
     skill.links = new_links;
 }
 
-fn matchesAgentPath(agent_list: []const agents.Agent, agent_id: []const u8, path: []const u8) bool {
+fn removePluginLinks(ctx: *Context, skill: *manifest.Skill, agent_list: []const agents.Agent) !void {
+    for (skill.links) |link| {
+        if (link.kind == .git) continue;
+        if (!agentInList(agent_list, link.agent)) continue;
+        const backend = findAgentPlugin(agent_list, link.agent) orelse continue;
+        plugins.remove(ctx.allocator, ctx.io, backend, link.package) catch |err| {
+            try std.Io.File.writeStreamingAll(.stderr(), ctx.io, "warning: failed to remove plugin ");
+            try std.Io.File.writeStreamingAll(.stderr(), ctx.io, link.package);
+            try std.Io.File.writeStreamingAll(.stderr(), ctx.io, " for ");
+            try std.Io.File.writeStreamingAll(.stderr(), ctx.io, link.agent);
+            try std.Io.File.writeStreamingAll(.stderr(), ctx.io, ": ");
+            try std.Io.File.writeStreamingAll(.stderr(), ctx.io, @errorName(err));
+            try std.Io.File.writeStreamingAll(.stderr(), ctx.io, "\n");
+        };
+    }
+}
+
+fn agentInList(agent_list: []const agents.Agent, agent_id: []const u8) bool {
     for (agent_list) |agent| {
-        if (std.mem.eql(u8, agent.id, agent_id) and paths.isInside(agent.skills, path)) return true;
+        if (std.mem.eql(u8, agent.id, agent_id)) return true;
     }
     return false;
+}
+
+fn findAgentPlugin(agent_list: []const agents.Agent, agent_id: []const u8) ?[]const u8 {
+    for (agent_list) |agent| {
+        if (std.mem.eql(u8, agent.id, agent_id)) return agent.plugin;
+    }
+    return null;
 }

@@ -5,6 +5,8 @@ pub const Agent = struct {
     id: []const u8,
     base: []const u8,
     skills: []const u8,
+    plugin: ?[]const u8 = null,
+    plugin_dir: ?[]const u8 = null,
 
     pub fn deinit(self: Agent, allocator: std.mem.Allocator) void {
         allocator.free(self.base);
@@ -18,6 +20,8 @@ pub const Candidate = struct {
     base: []const u8,
     skills: []const u8,
     exists: bool,
+    plugin: ?[]const u8 = null,
+    plugin_dir: ?[]const u8 = null,
 
     pub fn deinit(self: Candidate, allocator: std.mem.Allocator) void {
         allocator.free(self.base);
@@ -112,6 +116,8 @@ pub fn fromCandidates(
             .id = candidate.id,
             .base = try allocator.dupe(u8, candidate.base),
             .skills = try allocator.dupe(u8, candidate.skills),
+            .plugin = candidate.plugin,
+            .plugin_dir = candidate.plugin_dir,
         });
     }
 
@@ -146,7 +152,7 @@ fn maybeAdd(
 
     const skills = try agentSkills(allocator, base, def.skills);
     errdefer allocator.free(skills);
-    try list.append(allocator, .{ .id = def.id, .base = base, .skills = skills });
+    try list.append(allocator, .{ .id = def.id, .base = base, .skills = skills, .plugin = def.plugin, .plugin_dir = def.plugin_dir });
 }
 
 fn addCandidate(
@@ -170,7 +176,7 @@ fn addCandidate(
 
     const skills = try agentSkills(allocator, base, def.skills);
     errdefer allocator.free(skills);
-    try list.append(allocator, .{ .id = def.id, .label = def.label, .base = base, .skills = skills, .exists = exists });
+    try list.append(allocator, .{ .id = def.id, .label = def.label, .base = base, .skills = skills, .exists = exists, .plugin = def.plugin, .plugin_dir = def.plugin_dir });
 }
 
 fn scopeRoot(home: []const u8, cwd: []const u8, scope: Scope) []const u8 {

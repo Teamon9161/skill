@@ -7,6 +7,7 @@ const git = @import("../core/git.zig");
 const links = @import("../core/links.zig");
 const manifest = @import("../core/manifest.zig");
 const paths = @import("../core/paths.zig");
+const plugins = @import("../core/plugins.zig");
 const source_spec = @import("../core/source_spec.zig");
 
 pub fn run(ctx: *Context, selectors: []const source_spec.Selector) !void {
@@ -36,6 +37,40 @@ pub fn run(ctx: *Context, selectors: []const source_spec.Selector) !void {
 
 fn updateOne(ctx: *Context, cfg: config.Config, index: usize) !void {
     const skill = &ctx.manifest.skills[index];
+
+    // Update plugin/marketplace links
+    var has_git = false;
+    for (skill.links) |link| {
+        switch (link.kind) {
+            .git => has_git = true,
+            .marketplace, .plugin => {
+                const backend = if (config.findAgent(cfg, link.agent)) |def| def.plugin orelse link.agent else link.agent;
+                const info = plugins.PluginInfo{
+                    .kind = link.kind,
+                    .name = try ctx.allocator.dupe(u8, link.package),
+                    .marketplace = try ctx.allocator.dupe(u8, link.marketplace),
+                    .scope = try ctx.allocator.dupe(u8, link.scope),
+                };
+                defer info.deinit(ctx.allocator);
+                plugins.update(ctx.allocator, ctx.io, backend, info) catch |err| {
+                    try std.Io.File.writeStreamingAll(.stderr(), ctx.io, "warning: failed to update plugin ");
+                    try std.Io.File.writeStreamingAll(.stderr(), ctx.io, link.package);
+                    try std.Io.File.writeStreamingAll(.stderr(), ctx.io, " for ");
+                    try std.Io.File.writeStreamingAll(.stderr(), ctx.io, link.agent);
+                    try std.Io.File.writeStreamingAll(.stderr(), ctx.io, ": ");
+                    try std.Io.File.writeStreamingAll(.stderr(), ctx.io, @errorName(err));
+                    try std.Io.File.writeStreamingAll(.stderr(), ctx.io, "\n");
+                };
+            },
+        }
+    }
+
+    if (!has_git) {
+        try std.Io.File.writeStreamingAll(.stdout(), ctx.io, skill.name);
+        try std.Io.File.writeStreamingAll(.stdout(), ctx.io, "  plugin (no git repo)\n");
+        return;
+    }
+
     const source_options = try updateSourceOptions(ctx.allocator, cfg, skill.*);
     const urls = source_options.urls;
     defer config.freeStringList(ctx.allocator, urls);
@@ -72,10 +107,32 @@ fn updateOne(ctx: *Context, cfg: config.Config, index: usize) !void {
     const cwd = try paths.cwdAlloc(ctx.allocator, ctx.io);
     defer ctx.allocator.free(cwd);
 
-    const agent_list = try agents.detect(ctx.allocator, ctx.io, ctx.paths.home, cwd, cfg.agents, .{});
-    defer agents.deinitList(ctx.allocator, agent_list);
-    const created_links = try links.createForAgents(ctx.allocator, ctx.io, agent_list, skill.name, layout.target, .{ .prompt_conflicts = false });
-    manifest.replaceLinks(ctx.allocator, skill, created_links);
+    const all_agents = try agents.detect(ctx.allocator, ctx.io, ctx.paths.home, cwd, cfg.agents, .{});
+    defer agents.deinitList(ctx.allocator, all_agents);
+
+    // Only rebuild links for agents that have git-kind links in this skill
+    var git_agent_ids: std.ArrayList([]const u8) = .empty;
+    defer git_agent_ids.deinit(ctx.allocator);
+    for (skill.links) |link| {
+        if (link.kind == .git) try git_agent_ids.append(ctx.allocator, link.agent);
+    }
+
+    var git_agents: std.ArrayList(agents.Agent) = .empty;
+    defer git_agents.deinit(ctx.allocator);
+    for (all_agents) |agent| {
+        for (git_agent_ids.items) |id| {
+            if (std.mem.eql(u8, agent.id, id)) {
+                try git_agents.append(ctx.allocator, agent);
+                break;
+            }
+        }
+    }
+
+    if (git_agents.items.len > 0) {
+        const created_links = try links.createForAgents(ctx.allocator, ctx.io, git_agents.items, skill.name, layout.target, .{ .prompt_conflicts = false });
+        try manifest.replaceLinksForAgents(ctx.allocator, skill, git_agents.items, created_links);
+        ctx.allocator.free(created_links);
+    }
 
     try printUpdateResult(ctx.io, skill.name, old_commit, commit);
 }

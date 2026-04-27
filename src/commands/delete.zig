@@ -1,34 +1,64 @@
 const std = @import("std");
 const Context = @import("../context.zig").Context;
+const config = @import("../core/config.zig");
 const links = @import("../core/links.zig");
 const manifest = @import("../core/manifest.zig");
 const paths = @import("../core/paths.zig");
+const plugins = @import("../core/plugins.zig");
 
 pub fn run(ctx: *Context, queries: []const []const u8) !void {
-    for (queries) |query| try deleteOne(ctx, query);
+    const cfg = try config.load(ctx.allocator, ctx.io, ctx.paths.config, ctx.paths.sources);
+    defer cfg.deinit(ctx.allocator);
+
+    for (queries) |query| try deleteOne(ctx, cfg, query);
     try ctx.save();
 }
 
-fn deleteOne(ctx: *Context, query: []const u8) !void {
+fn deleteOne(ctx: *Context, cfg: config.Config, query: []const u8) !void {
     const matched = try manifest.matchSkills(ctx.allocator, ctx.manifest, query);
     defer ctx.allocator.free(matched);
 
     if (matched.len == 0) return error.SkillNotFound;
 
-    // collect unique repo paths from matched skills
+    // Separate plugin-only skills (path="") from repo-based skills
     var repo_paths: std.ArrayList([]const u8) = .empty;
     defer repo_paths.deinit(ctx.allocator);
+    var plugin_indices: std.ArrayList(usize) = .empty;
+    defer plugin_indices.deinit(ctx.allocator);
+
     for (matched) |i| {
         const path = ctx.manifest.skills[i].path;
-        var dup = false;
-        for (repo_paths.items) |p| {
-            if (std.mem.eql(u8, p, path)) {
-                dup = true;
-                break;
+        if (path.len == 0) {
+            try plugin_indices.append(ctx.allocator, i);
+        } else {
+            var dup = false;
+            for (repo_paths.items) |p| {
+                if (std.mem.eql(u8, p, path)) {
+                    dup = true;
+                    break;
+                }
             }
+            if (!dup) try repo_paths.append(ctx.allocator, path);
         }
-        if (!dup) try repo_paths.append(ctx.allocator, path);
     }
+
+    // Handle plugin-only skills
+    if (plugin_indices.items.len > 0) {
+        for (plugin_indices.items) |i| {
+            const skill = &ctx.manifest.skills[i];
+            try removePluginLinks(ctx.allocator, ctx.io, cfg, skill.links);
+            try printDeletedLinks(ctx.io, skill.*);
+        }
+        // Remove from manifest highest-index first
+        const sorted = try ctx.allocator.dupe(usize, plugin_indices.items);
+        defer ctx.allocator.free(sorted);
+        std.mem.sort(usize, sorted, {}, std.sort.desc(usize));
+        for (sorted) |i| {
+            manifest.removeIndex(ctx.allocator, &ctx.manifest, i);
+        }
+    }
+
+    if (repo_paths.items.len == 0) return;
 
     // choose which repos to delete when there are multiple
     const selected = try chooseRepos(ctx, repo_paths.items);
@@ -43,6 +73,18 @@ fn deleteOne(ctx: *Context, query: []const u8) !void {
     for (repo_paths.items, 0..) |repo_path, r| {
         if (!selected[r]) continue;
         try deleteRepo(ctx, repo_path);
+    }
+}
+
+fn removePluginLinks(allocator: std.mem.Allocator, io: std.Io, cfg: config.Config, links_to_remove: []const manifest.Link) !void {
+    for (links_to_remove) |link| {
+        if (link.kind == .git) continue;
+        const backend = if (config.findAgent(cfg, link.agent)) |def| def.plugin orelse link.agent else link.agent;
+        plugins.remove(allocator, io, backend, link.package) catch {
+            try std.Io.File.writeStreamingAll(.stderr(), io, "warning: failed to remove plugin ");
+            try std.Io.File.writeStreamingAll(.stderr(), io, link.package);
+            try std.Io.File.writeStreamingAll(.stderr(), io, "\n");
+        };
     }
 }
 

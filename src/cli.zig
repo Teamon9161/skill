@@ -52,6 +52,7 @@ pub const Command = union(enum) {
 pub const AddTarget = struct {
     inputs: []const []const u8,
     filter: agents.AgentFilter,
+    force_git: bool = false,
 };
 
 pub const Target = struct {
@@ -105,7 +106,7 @@ fn parseCommandName(text: []const u8) ?CommandName {
 
 fn parseAdd(allocator: std.mem.Allocator, io: std.Io, iter: *std.process.Args.Iterator) !Command {
     _ = io;
-    const parsed = try parseDynamicAgentArgs(allocator, iter);
+    const parsed = try parseDynamicAgentArgs(allocator, iter, .{ .allow_git_flag = true });
     errdefer parsed.deinit(allocator);
     if (parsed.help) {
         parsed.deinit(allocator);
@@ -115,12 +116,13 @@ fn parseAdd(allocator: std.mem.Allocator, io: std.Io, iter: *std.process.Args.It
     return .{ .add = .{
         .inputs = parsed.values,
         .filter = .{ .ids = parsed.agent_ids, .scope = parsed.scope },
+        .force_git = parsed.force_git,
     } };
 }
 
 fn parseRemove(allocator: std.mem.Allocator, io: std.Io, iter: *std.process.Args.Iterator) !Command {
     _ = io;
-    const parsed = try parseDynamicAgentArgs(allocator, iter);
+    const parsed = try parseDynamicAgentArgs(allocator, iter, .{});
     errdefer parsed.deinit(allocator);
     if (parsed.help) {
         parsed.deinit(allocator);
@@ -138,6 +140,7 @@ const DynamicAgentArgs = struct {
     agent_ids: []const []const u8 = &.{},
     scope: agents.Scope = .global,
     help: bool = false,
+    force_git: bool = false,
 
     fn deinit(self: DynamicAgentArgs, allocator: std.mem.Allocator) void {
         for (self.values) |v| allocator.free(v);
@@ -147,9 +150,14 @@ const DynamicAgentArgs = struct {
     }
 };
 
+const DynamicAgentParseOptions = struct {
+    allow_git_flag: bool = false,
+};
+
 fn parseDynamicAgentArgs(
     allocator: std.mem.Allocator,
     iter: *std.process.Args.Iterator,
+    options: DynamicAgentParseOptions,
 ) !DynamicAgentArgs {
     var ids: std.ArrayList([]const u8) = .empty;
     errdefer {
@@ -163,12 +171,17 @@ fn parseDynamicAgentArgs(
     }
 
     var scope: agents.Scope = .global;
+    var force_git = false;
     while (iter.next()) |arg| {
         if (std.mem.eql(u8, arg, "-h") or std.mem.eql(u8, arg, "--help")) {
             return .{ .help = true, .values = try values.toOwnedSlice(allocator), .agent_ids = try ids.toOwnedSlice(allocator) };
         }
         if (std.mem.eql(u8, arg, "-l") or std.mem.eql(u8, arg, "--local")) {
             scope = .local;
+            continue;
+        }
+        if (options.allow_git_flag and std.mem.eql(u8, arg, "--git")) {
+            force_git = true;
             continue;
         }
         if (std.mem.eql(u8, arg, "--agent")) {
@@ -186,7 +199,7 @@ fn parseDynamicAgentArgs(
         try values.append(allocator, try allocator.dupe(u8, arg));
     }
 
-    return .{ .values = try values.toOwnedSlice(allocator), .agent_ids = try ids.toOwnedSlice(allocator), .scope = scope };
+    return .{ .values = try values.toOwnedSlice(allocator), .agent_ids = try ids.toOwnedSlice(allocator), .scope = scope, .force_git = force_git };
 }
 
 fn appendUniqueAgent(allocator: std.mem.Allocator, ids: *std.ArrayList([]const u8), id: []const u8) !void {
@@ -325,7 +338,7 @@ fn parseUninstall(allocator: std.mem.Allocator, io: std.Io, iter: *std.process.A
 pub fn printUsage(io: std.Io) !void {
     try std.Io.File.writeStreamingAll(.stderr(), io,
         \\Usage:
-        \\  skill add|-A [-l|--local] [--<agent>|--agent <id>] <source|path>...
+        \\  skill add|-A [--git] [-l|--local] [--<agent>|--agent <id>] <source|path>...
         \\  skill remove|-R [-l|--local] <query>... [--<agent>|--agent <id>]
         \\  skill delete|-D <query>...
         \\  skill update|-U [project|@owner/project]...

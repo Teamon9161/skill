@@ -12,11 +12,16 @@ urls = [
 label = "Claude Code"
 dir = ".claude"
 skills = "skills"
+plugin = "claude"
+plugin_dir = ".claude-plugin"
 
 [agents.codex]
 label = "Codex"
 dir = ".codex"
 skills = "skills"
+
+# Force selected repos to use git/symlink installs even if plugin metadata exists.
+# prefer_git = ["obra/superpowers"]
 
 [aliases]
 ham = "@kromahlusenii-ops/ham"
