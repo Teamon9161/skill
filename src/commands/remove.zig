@@ -19,7 +19,7 @@ pub fn run(ctx: *Context, target: cli.Target) !void {
     const candidate_list = try agents.candidates(ctx.allocator, ctx.io, ctx.paths.home, cwd, cfg.agents, target.filter.scope);
     defer agents.deinitCandidates(ctx.allocator, candidate_list);
 
-    const selected = try agents.selectInteractive(ctx.allocator, ctx.io, candidate_list, target.filter);
+    const selected = try agents.selectInteractive(ctx.allocator, ctx.io, candidate_list, target.filter, null);
     defer ctx.allocator.free(selected);
 
     const agent_list = try agents.fromCandidates(ctx.allocator, candidate_list, selected);

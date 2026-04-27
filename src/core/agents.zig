@@ -217,6 +217,7 @@ pub fn selectInteractive(
     io: std.Io,
     candidate_list: []const Candidate,
     filter: AgentFilter,
+    initial_selected: ?[]const bool,
 ) ![]bool {
     const selected = try allocator.alloc(bool, candidate_list.len);
     errdefer allocator.free(selected);
@@ -232,10 +233,11 @@ pub fn selectInteractive(
     }
 
     for (candidate_list, 0..) |candidate, i| {
-        selected[i] = candidate.exists;
+        const init = if (initial_selected) |s| s[i] else true;
+        selected[i] = candidate.exists and init;
     }
 
-    try printAgentPrompt(io, candidate_list, selected);
+    try printAgentPrompt(io, candidate_list, selected, initial_selected);
 
     var buf: [256]u8 = undefined;
     const n = std.Io.File.readStreaming(.stdin(), io, &.{buf[0..]}) catch |err| switch (err) {
@@ -267,7 +269,7 @@ pub fn selectInteractive(
     return selected;
 }
 
-fn printAgentPrompt(io: std.Io, candidate_list: []const Candidate, selected: []const bool) !void {
+fn printAgentPrompt(io: std.Io, candidate_list: []const Candidate, selected: []const bool, initial_selected: ?[]const bool) !void {
     try std.Io.File.writeStreamingAll(.stdout(), io, "Available agents:\n");
     for (candidate_list, 0..) |candidate, i| {
         try std.Io.File.writeStreamingAll(.stdout(), io, if (selected[i]) "  [+] " else "  [ ] ");
@@ -280,6 +282,8 @@ fn printAgentPrompt(io: std.Io, candidate_list: []const Candidate, selected: []c
         try std.Io.File.writeStreamingAll(.stdout(), io, ")");
         if (selected[i]) {
             try std.Io.File.writeStreamingAll(.stdout(), io, " default");
+        } else if (initial_selected != null and !initial_selected.?[i] and candidate.exists) {
+            try std.Io.File.writeStreamingAll(.stdout(), io, " not supported");
         } else if (!candidate.exists) {
             try std.Io.File.writeStreamingAll(.stdout(), io, " not detected");
         }

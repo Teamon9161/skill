@@ -123,6 +123,18 @@ pub fn remove(allocator: std.mem.Allocator, io: std.Io, backend: []const u8, nam
 }
 
 pub fn update(allocator: std.mem.Allocator, io: std.Io, backend: []const u8, info: PluginInfo) !void {
+    if (info.kind == .marketplace) {
+        // Refresh the local marketplace catalog after git pull.
+        const r1 = try runPluginCli(allocator, io, backend, &.{ "plugin", "marketplace", "update", info.name }, null);
+        r1.deinit(allocator);
+        // The installed plugin's full id is "<plugin>@<marketplace>"; both names come from
+        // the package field (marketplace name matches plugin name for single-plugin repos).
+        const full_name = try std.fmt.allocPrint(allocator, "{s}@{s}", .{ info.name, info.name });
+        defer allocator.free(full_name);
+        const r2 = try runPluginCli(allocator, io, backend, &.{ "plugin", "update", full_name }, null);
+        r2.deinit(allocator);
+        return;
+    }
     const result = try runPluginCli(allocator, io, backend, &.{ "plugin", "update", info.name }, null);
     result.deinit(allocator);
 }

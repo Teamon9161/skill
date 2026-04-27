@@ -22,19 +22,15 @@ pub fn run(ctx: *Context, target: cli.AddTarget) !void {
     const candidate_list = try agents.candidates(ctx.allocator, ctx.io, ctx.paths.home, cwd, cfg.agents, target.filter.scope);
     defer agents.deinitCandidates(ctx.allocator, candidate_list);
 
-    const selected = try agents.selectInteractive(ctx.allocator, ctx.io, candidate_list, target.filter);
-    defer ctx.allocator.free(selected);
-
-    const agent_list = try agents.fromCandidates(ctx.allocator, candidate_list, selected);
-    defer agents.deinitList(ctx.allocator, agent_list);
-
+    // Agent selection is deferred to per-repo inside addRemote/addLocal so defaults
+    // can reflect what the skill actually supports (detected after cloning).
     for (target.inputs) |raw_input| {
         const input = resolveAlias(ctx.io, raw_input, cfg.aliases);
         const spec = try source_spec.parseAddSpec(ctx.allocator, input, cfg.sources);
         defer spec.deinit(ctx.allocator);
         switch (spec) {
-            .remote => |remote| try addRemote(ctx, remote, agent_list, cfg, target.force_git),
-            .local => |local| try addLocal(ctx, local, agent_list),
+            .remote => |remote| try addRemote(ctx, remote, candidate_list, target.filter, cfg, target.force_git),
+            .local => |local| try addLocal(ctx, local, candidate_list, target.filter),
         }
     }
 
@@ -54,7 +50,7 @@ fn localDirExists(io: std.Io, name: []const u8) bool {
     return true;
 }
 
-fn addRemote(ctx: *Context, spec: source_spec.RemoteSpec, agent_list: []const agents.Agent, cfg: config.Config, force_git: bool) !void {
+fn addRemote(ctx: *Context, spec: source_spec.RemoteSpec, candidate_list: []const agents.Candidate, filter: agents.AgentFilter, cfg: config.Config, force_git: bool) !void {
     try git.check(ctx.allocator, ctx.io);
     try std.Io.Dir.createDirPath(.cwd(), ctx.io, ctx.paths.repos);
 
@@ -66,6 +62,19 @@ fn addRemote(ctx: *Context, spec: source_spec.RemoteSpec, agent_list: []const ag
     else
         try git.cloneAny(ctx.allocator, ctx.io, spec.urls, repo_path, spec.connect_timeout_seconds);
     defer ctx.allocator.free(selected_source);
+
+    // Detect skill support after cloning so we can set smarter defaults.
+    const base_path = try sourceBasePath(ctx.allocator, repo_path, spec.source_path);
+    defer ctx.allocator.free(base_path);
+
+    const skill_supported = try detectSkillSupport(ctx.allocator, ctx.io, base_path, candidate_list);
+    defer ctx.allocator.free(skill_supported);
+
+    const selected = try agents.selectInteractive(ctx.allocator, ctx.io, candidate_list, filter, skill_supported);
+    defer ctx.allocator.free(selected);
+
+    const agent_list = try agents.fromCandidates(ctx.allocator, candidate_list, selected);
+    defer agents.deinitList(ctx.allocator, agent_list);
 
     try installRemoteLayouts(ctx, spec, repo_path, selected_source, agent_list, cfg, force_git);
 }
@@ -135,15 +144,18 @@ fn installRemoteLayouts(
 
         for (plans) |plan| {
             if (plan.kind == .git) continue;
-            try recordPluginLink(ctx, spec, selected_source, branch, commit, layout.name, plan);
+            try recordPluginLink(ctx, spec, selected_source, branch, commit, layout.name, plan, repo_path);
         }
     }
 
-    // // Delete the cloned repo only after all layouts are processed and only when
-    // // no agent uses a git symlink (git agents need the repo to stay on disk).
-    // if (git_agents.items.len == 0) {
-    //     deleteRepo(ctx.io, repo_path);
-    // }
+    // When no SKILL.md exists, plugin-only agents still need a manifest entry so
+    // that "skill update" can find and update them later.
+    if (layouts.len == 0) {
+        for (plans) |plan| {
+            if (plan.kind == .git) continue;
+            try recordPluginLink(ctx, spec, selected_source, branch, commit, default_name, plan, repo_path);
+        }
+    }
 }
 
 fn detectAgentPlans(
@@ -174,8 +186,6 @@ fn detectAgentPlans(
     return plans;
 }
 
-// Record a plugin link in the manifest after the CLI install has already run.
-// Uses "" as storage_path because the repo is deleted for plugin-only installs.
 fn recordPluginLink(
     ctx: *Context,
     spec: source_spec.RemoteSpec,
@@ -184,6 +194,7 @@ fn recordPluginLink(
     commit: []const u8,
     name: []const u8,
     plan: AgentPlan,
+    repo_path: []const u8,
 ) !void {
     const pi = plan.info.?;
     const link = try manifest.newPluginLink(ctx.allocator, plan.agent.id, pi.kind, pi.name, pi.scope);
@@ -209,7 +220,7 @@ fn recordPluginLink(
             spec.source_label,
             spec.source_path,
             selected_source,
-            "",
+            repo_path,
         );
         try manifest.appendSkill(ctx.allocator, &ctx.manifest, skill);
         break :blk ctx.manifest.skills.len - 1;
@@ -276,9 +287,53 @@ fn deleteRepo(io: std.Io, repo_path: []const u8) void {
     std.Io.Dir.deleteTree(.cwd(), io, repo_path) catch {};
 }
 
-fn addLocal(ctx: *Context, spec: source_spec.LocalSpec, agent_list: []const agents.Agent) !void {
+// Determine which agents are supported by the skill at base_path.
+// An agent is supported if:
+//   - it has plugin capability AND the skill contains the matching plugin dir, OR
+//   - the skill has a SKILL.md (git layout support).
+fn detectSkillSupport(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    base_path: []const u8,
+    candidate_list: []const agents.Candidate,
+) ![]bool {
+    const has_layouts = blk: {
+        const ls = detect.skillLayouts(allocator, io, base_path, std.fs.path.basename(base_path)) catch |err| switch (err) {
+            error.UnsupportedSkillLayout => break :blk false,
+            else => return err,
+        };
+        for (ls) |l| l.deinit(allocator);
+        allocator.free(ls);
+        break :blk true;
+    };
+
+    const supported = try allocator.alloc(bool, candidate_list.len);
+    errdefer allocator.free(supported);
+    for (candidate_list, 0..) |candidate, i| {
+        if (candidate.plugin_dir) |pd| {
+            if (try plugins.detect(allocator, io, pd, base_path)) |pi| {
+                pi.deinit(allocator);
+                supported[i] = true;
+                continue;
+            }
+        }
+        supported[i] = has_layouts;
+    }
+    return supported;
+}
+
+fn addLocal(ctx: *Context, spec: source_spec.LocalSpec, candidate_list: []const agents.Candidate, filter: agents.AgentFilter) !void {
     const abs_path = try absolutePath(ctx.allocator, ctx.io, spec.path);
     defer ctx.allocator.free(abs_path);
+
+    const skill_supported = try detectSkillSupport(ctx.allocator, ctx.io, abs_path, candidate_list);
+    defer ctx.allocator.free(skill_supported);
+
+    const selected = try agents.selectInteractive(ctx.allocator, ctx.io, candidate_list, filter, skill_supported);
+    defer ctx.allocator.free(selected);
+
+    const agent_list = try agents.fromCandidates(ctx.allocator, candidate_list, selected);
+    defer agents.deinitList(ctx.allocator, agent_list);
 
     const project = std.fs.path.basename(abs_path);
     const layouts = try detect.skillLayouts(ctx.allocator, ctx.io, abs_path, project);
