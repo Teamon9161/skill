@@ -9,11 +9,6 @@ Default supported agents:
 
 Additional agents and sources can be added through configuration.
 
-## Requirements
-
-- Zig `0.16.0` or newer
-- Git, required for remote installs and updates
-
 ## Install
 
 Windows:
@@ -31,42 +26,12 @@ curl -fsSL https://raw.githubusercontent.com/Teamon9161/skill/main/install.sh | 
 Install a specific version:
 
 ```powershell
-$env:SKILL_VERSION = "0.1.0"; irm https://raw.githubusercontent.com/Teamon9161/skill/main/install.ps1 | iex
+$env:SKILL_VERSION = "0.1.7"; irm https://raw.githubusercontent.com/Teamon9161/skill/main/install.ps1 | iex
 ```
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Teamon9161/skill/main/install.sh | SKILL_VERSION=0.1.0 sh
+curl -fsSL https://raw.githubusercontent.com/Teamon9161/skill/main/install.sh | SKILL_VERSION=0.1.7 sh
 ```
-
-## Build
-
-```powershell
-zig build
-```
-
-The binary is written to:
-
-```text
-zig-out/bin/skill
-```
-
-For development:
-
-```powershell
-zig build run -- help
-zig build test
-```
-
-## Release
-
-Create and push a version tag:
-
-```powershell
-git tag v0.1.0
-git push origin v0.1.0
-```
-
-The release workflow builds Linux, macOS, and Windows binaries, uploads them to GitHub Releases, and publishes `checksums.txt`. The install scripts download the latest release by default.
 
 ## Usage
 
@@ -251,3 +216,24 @@ Sources may use either `url` for one Git remote or `urls` for ordered alternativ
 - Installed skills are exposed through directory links.
 - On Windows, `skill` falls back to junctions if directory symlinks are not allowed.
 - `delete` only removes downloaded paths inside `repos/`; local skills are not deleted through that command.
+
+
+## Build
+
+- Zig `0.16.0` or newer
+```powershell
+zig build
+```
+
+The binary is written to:
+
+```text
+zig-out/bin/skill
+```
+
+For development:
+
+```powershell
+zig build run -- help
+zig build test
+```
