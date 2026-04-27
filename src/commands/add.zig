@@ -20,7 +20,7 @@ pub fn run(ctx: *Context, target: cli.AddTarget) !void {
     const candidate_list = try agents.candidates(ctx.allocator, ctx.io, ctx.paths.home, cwd, cfg.agents, target.filter.scope);
     defer agents.deinitCandidates(ctx.allocator, candidate_list);
 
-    const selected = try selectAgents(ctx, candidate_list, target.filter);
+    const selected = try agents.selectInteractive(ctx.allocator, ctx.io, candidate_list, target.filter);
     defer ctx.allocator.free(selected);
 
     const agent_list = try agents.fromCandidates(ctx.allocator, candidate_list, selected);
@@ -60,7 +60,7 @@ fn addRemote(ctx: *Context, spec: source_spec.RemoteSpec, agent_list: []const ag
     defer ctx.allocator.free(repo_path);
 
     const selected_source = if (try repoExists(ctx.io, repo_path))
-        try git.updateAny(ctx.allocator, ctx.io, repo_path, "", spec.urls, spec.connect_timeout_seconds)
+        try git.remoteUrl(ctx.allocator, ctx.io, repo_path)
     else
         try git.cloneAny(ctx.allocator, ctx.io, spec.urls, repo_path, spec.connect_timeout_seconds);
     defer ctx.allocator.free(selected_source);
@@ -143,15 +143,6 @@ fn installLayout(
     target: []const u8,
     agent_list: []const agents.Agent,
 ) !void {
-    const created_links = try links.createForAgents(ctx.allocator, ctx.io, agent_list, info.name, target, .{});
-    var created_links_owned = true;
-    errdefer {
-        if (created_links_owned) {
-            for (created_links) |link| link.deinit(ctx.allocator);
-            ctx.allocator.free(created_links);
-        }
-    }
-
     const existing = manifest.findIdentity(
         ctx.manifest,
         info.source_label,
@@ -160,6 +151,16 @@ fn installLayout(
         info.source_path,
         info.name,
     );
+    const prev_links: []const manifest.Link = if (existing) |i| ctx.manifest.skills[i].links else &.{};
+
+    const created_links = try links.createForAgents(ctx.allocator, ctx.io, agent_list, info.name, target, .{});
+    var created_links_owned = true;
+    errdefer {
+        if (created_links_owned) {
+            for (created_links) |link| link.deinit(ctx.allocator);
+            ctx.allocator.free(created_links);
+        }
+    }
 
     const index = if (existing) |i| i else blk: {
         const skill = try manifest.newSkill(
@@ -180,7 +181,7 @@ fn installLayout(
     ctx.allocator.free(skill.source);
     skill.source = try ctx.allocator.dupe(u8, info.source);
     try manifest.setGit(ctx.allocator, skill, info.branch, info.commit);
-    try printInstalledLinks(ctx.io, info.name, created_links);
+    try printInstalledLinks(ctx.io, info.name, created_links, prev_links);
     try manifest.replaceLinksForAgents(ctx.allocator, skill, agent_list, created_links);
     created_links_owned = false;
     ctx.allocator.free(created_links);
@@ -190,8 +191,13 @@ fn installLayout(
     }
 }
 
-fn printInstalledLinks(io: std.Io, name: []const u8, installed_links: []const manifest.Link) !void {
-    if (installed_links.len == 0) {
+fn printInstalledLinks(io: std.Io, name: []const u8, created_links: []const manifest.Link, prev_links: []const manifest.Link) !void {
+    var new_count: usize = 0;
+    for (created_links) |link| {
+        if (isNewLink(link, prev_links)) new_count += 1;
+    }
+
+    if (new_count == 0) {
         try std.Io.File.writeStreamingAll(.stdout(), io, "No links changed for ");
         try std.Io.File.writeStreamingAll(.stdout(), io, name);
         try std.Io.File.writeStreamingAll(.stdout(), io, "\n");
@@ -201,7 +207,8 @@ fn printInstalledLinks(io: std.Io, name: []const u8, installed_links: []const ma
     try std.Io.File.writeStreamingAll(.stdout(), io, "Installed ");
     try std.Io.File.writeStreamingAll(.stdout(), io, name);
     try std.Io.File.writeStreamingAll(.stdout(), io, " for:\n");
-    for (installed_links) |link| {
+    for (created_links) |link| {
+        if (!isNewLink(link, prev_links)) continue;
         try std.Io.File.writeStreamingAll(.stdout(), io, "  - ");
         try std.Io.File.writeStreamingAll(.stdout(), io, link.agent);
         try std.Io.File.writeStreamingAll(.stdout(), io, ": ");
@@ -210,94 +217,15 @@ fn printInstalledLinks(io: std.Io, name: []const u8, installed_links: []const ma
     }
 }
 
-fn selectAgents(
-    ctx: *Context,
-    candidate_list: []const agents.Candidate,
-    filter: agents.AgentFilter,
-) ![]bool {
-    const selected = try ctx.allocator.alloc(bool, candidate_list.len);
-    errdefer ctx.allocator.free(selected);
-
-    if (filter.hasAny()) {
-        var count: usize = 0;
-        for (candidate_list, 0..) |candidate, i| {
-            selected[i] = filter.matches(candidate.id);
-            if (selected[i]) count += 1;
-        }
-        if (count == 0) return error.UnknownAgent;
-        return selected;
+fn isNewLink(link: manifest.Link, prev_links: []const manifest.Link) bool {
+    for (prev_links) |prev| {
+        if (std.mem.eql(u8, prev.agent, link.agent) and
+            std.mem.eql(u8, prev.path, link.path) and
+            std.mem.eql(u8, prev.target, link.target)) return false;
     }
-
-    for (candidate_list, 0..) |candidate, i| {
-        selected[i] = candidate.exists;
-    }
-
-    try printAgentPrompt(ctx.io, candidate_list, selected);
-
-    var buf: [256]u8 = undefined;
-    const n = std.Io.File.readStreaming(.stdin(), ctx.io, &.{buf[0..]}) catch |err| switch (err) {
-        error.EndOfStream => return selected,
-        else => return err,
-    };
-    const answer = std.mem.trim(u8, buf[0..n], " \t\r\n");
-    if (answer.len == 0) return selected;
-
-    @memset(selected, false);
-    var tokens = std.mem.tokenizeAny(u8, answer, ", \t");
-    while (tokens.next()) |token| {
-        if (std.fmt.parseUnsigned(usize, token, 10)) |index| {
-            if (index == 0 or index > candidate_list.len) return error.InvalidAgentSelection;
-            selected[index - 1] = true;
-            continue;
-        } else |_| {}
-
-        var matched = false;
-        for (candidate_list, 0..) |candidate, i| {
-            if (std.ascii.eqlIgnoreCase(token, candidate.id) or std.ascii.eqlIgnoreCase(token, candidate.label)) {
-                selected[i] = true;
-                matched = true;
-            }
-        }
-        if (!matched) return error.InvalidAgentSelection;
-    }
-
-    return selected;
+    return true;
 }
 
-fn printAgentPrompt(io: std.Io, candidate_list: []const agents.Candidate, selected: []const bool) !void {
-    try std.Io.File.writeStreamingAll(.stdout(), io, "Available agents:\n");
-    for (candidate_list, 0..) |candidate, i| {
-        try std.Io.File.writeStreamingAll(.stdout(), io, if (selected[i]) "  [+] " else "  [ ] ");
-        var number: [32]u8 = undefined;
-        const number_text = try std.fmt.bufPrint(&number, "{d}. ", .{i + 1});
-        try std.Io.File.writeStreamingAll(.stdout(), io, number_text);
-        try std.Io.File.writeStreamingAll(.stdout(), io, candidate.label);
-        try std.Io.File.writeStreamingAll(.stdout(), io, " (");
-        try std.Io.File.writeStreamingAll(.stdout(), io, candidate.base);
-        try std.Io.File.writeStreamingAll(.stdout(), io, ")");
-        if (selected[i]) {
-            try std.Io.File.writeStreamingAll(.stdout(), io, " default");
-        } else if (!candidate.exists) {
-            try std.Io.File.writeStreamingAll(.stdout(), io, " not detected");
-        }
-        try std.Io.File.writeStreamingAll(.stdout(), io, "\n");
-    }
-    try std.Io.File.writeStreamingAll(.stdout(), io, "Enter numbers or ids to override. ");
-    try printDefaultSelection(io, candidate_list, selected);
-    try std.Io.File.writeStreamingAll(.stdout(), io, ": ");
-}
-
-fn printDefaultSelection(io: std.Io, candidate_list: []const agents.Candidate, selected: []const bool) !void {
-    var any = false;
-    try std.Io.File.writeStreamingAll(.stdout(), io, "Press Enter for default");
-    for (candidate_list, 0..) |candidate, i| {
-        if (!selected[i]) continue;
-        try std.Io.File.writeStreamingAll(.stdout(), io, if (any) ", " else " ");
-        try std.Io.File.writeStreamingAll(.stdout(), io, candidate.id);
-        any = true;
-    }
-    if (!any) try std.Io.File.writeStreamingAll(.stdout(), io, " none");
-}
 
 fn repoExists(io: std.Io, repo_path: []const u8) !bool {
     std.Io.Dir.accessAbsolute(io, repo_path, .{}) catch |err| switch (err) {

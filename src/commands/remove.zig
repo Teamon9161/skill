@@ -14,7 +14,13 @@ pub fn run(ctx: *Context, target: cli.Target) !void {
     const cwd = try paths.cwdAlloc(ctx.allocator, ctx.io);
     defer ctx.allocator.free(cwd);
 
-    const agent_list = try agents.detect(ctx.allocator, ctx.io, ctx.paths.home, cwd, cfg.agents, target.filter);
+    const candidate_list = try agents.candidates(ctx.allocator, ctx.io, ctx.paths.home, cwd, cfg.agents, target.filter.scope);
+    defer agents.deinitCandidates(ctx.allocator, candidate_list);
+
+    const selected = try agents.selectInteractive(ctx.allocator, ctx.io, candidate_list, target.filter);
+    defer ctx.allocator.free(selected);
+
+    const agent_list = try agents.fromCandidates(ctx.allocator, candidate_list, selected);
     defer agents.deinitList(ctx.allocator, agent_list);
 
     var changed = false;

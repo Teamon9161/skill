@@ -189,3 +189,93 @@ fn agentSkills(allocator: std.mem.Allocator, base: []const u8, skills: []const u
     if (std.fs.path.isAbsolute(skills)) return allocator.dupe(u8, skills);
     return std.fs.path.join(allocator, &.{ base, skills });
 }
+
+pub fn selectInteractive(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    candidate_list: []const Candidate,
+    filter: AgentFilter,
+) ![]bool {
+    const selected = try allocator.alloc(bool, candidate_list.len);
+    errdefer allocator.free(selected);
+
+    if (filter.hasAny()) {
+        var count: usize = 0;
+        for (candidate_list, 0..) |candidate, i| {
+            selected[i] = filter.matches(candidate.id);
+            if (selected[i]) count += 1;
+        }
+        if (count == 0) return error.UnknownAgent;
+        return selected;
+    }
+
+    for (candidate_list, 0..) |candidate, i| {
+        selected[i] = candidate.exists;
+    }
+
+    try printAgentPrompt(io, candidate_list, selected);
+
+    var buf: [256]u8 = undefined;
+    const n = std.Io.File.readStreaming(.stdin(), io, &.{buf[0..]}) catch |err| switch (err) {
+        error.EndOfStream => return selected,
+        else => return err,
+    };
+    const answer = std.mem.trim(u8, buf[0..n], " \t\r\n");
+    if (answer.len == 0) return selected;
+
+    @memset(selected, false);
+    var tokens = std.mem.tokenizeAny(u8, answer, ", \t");
+    while (tokens.next()) |token| {
+        if (std.fmt.parseUnsigned(usize, token, 10)) |index| {
+            if (index == 0 or index > candidate_list.len) return error.InvalidAgentSelection;
+            selected[index - 1] = true;
+            continue;
+        } else |_| {}
+
+        var matched = false;
+        for (candidate_list, 0..) |candidate, i| {
+            if (std.ascii.eqlIgnoreCase(token, candidate.id) or std.ascii.eqlIgnoreCase(token, candidate.label)) {
+                selected[i] = true;
+                matched = true;
+            }
+        }
+        if (!matched) return error.InvalidAgentSelection;
+    }
+
+    return selected;
+}
+
+fn printAgentPrompt(io: std.Io, candidate_list: []const Candidate, selected: []const bool) !void {
+    try std.Io.File.writeStreamingAll(.stdout(), io, "Available agents:\n");
+    for (candidate_list, 0..) |candidate, i| {
+        try std.Io.File.writeStreamingAll(.stdout(), io, if (selected[i]) "  [+] " else "  [ ] ");
+        var number: [32]u8 = undefined;
+        const number_text = try std.fmt.bufPrint(&number, "{d}. ", .{i + 1});
+        try std.Io.File.writeStreamingAll(.stdout(), io, number_text);
+        try std.Io.File.writeStreamingAll(.stdout(), io, candidate.label);
+        try std.Io.File.writeStreamingAll(.stdout(), io, " (");
+        try std.Io.File.writeStreamingAll(.stdout(), io, candidate.base);
+        try std.Io.File.writeStreamingAll(.stdout(), io, ")");
+        if (selected[i]) {
+            try std.Io.File.writeStreamingAll(.stdout(), io, " default");
+        } else if (!candidate.exists) {
+            try std.Io.File.writeStreamingAll(.stdout(), io, " not detected");
+        }
+        try std.Io.File.writeStreamingAll(.stdout(), io, "\n");
+    }
+    try std.Io.File.writeStreamingAll(.stdout(), io, "Enter numbers or ids to override. ");
+    try printDefaultSelection(io, candidate_list, selected);
+    try std.Io.File.writeStreamingAll(.stdout(), io, ": ");
+}
+
+fn printDefaultSelection(io: std.Io, candidate_list: []const Candidate, selected: []const bool) !void {
+    var any = false;
+    try std.Io.File.writeStreamingAll(.stdout(), io, "Press Enter for default");
+    for (candidate_list, 0..) |candidate, i| {
+        if (!selected[i]) continue;
+        try std.Io.File.writeStreamingAll(.stdout(), io, if (any) ", " else " ");
+        try std.Io.File.writeStreamingAll(.stdout(), io, candidate.id);
+        any = true;
+    }
+    if (!any) try std.Io.File.writeStreamingAll(.stdout(), io, " none");
+}

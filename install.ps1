@@ -62,7 +62,9 @@ try {
     $ArchivePath = Join-Path $TempDir $Archive
     $ChecksumsPath = Join-Path $TempDir "checksums.txt"
 
+    Write-Host "Downloading $Archive..."
     Invoke-WebRequest -Uri "$BaseUrl/$Archive" -OutFile $ArchivePath
+    Write-Host "Downloading checksums..."
     Invoke-WebRequest -Uri "$BaseUrl/checksums.txt" -OutFile $ChecksumsPath
 
     $ChecksumLine = Get-Content $ChecksumsPath | Where-Object {

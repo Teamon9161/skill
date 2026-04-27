@@ -40,17 +40,14 @@ fn tempPath(allocator: std.mem.Allocator, environ: std.process.Environ) ![]const
 }
 
 fn exec(allocator: std.mem.Allocator, io: std.Io, argv: []const []const u8) !void {
-    const result = try std.process.run(allocator, io, .{
+    _ = allocator;
+    var child = try std.process.spawn(io, .{
         .argv = argv,
-        .stdout_limit = .limited(4 * 1024 * 1024),
-        .stderr_limit = .limited(1024 * 1024),
+        .stdin = .ignore,
         .expand_arg0 = .expand,
     });
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-    if (result.stdout.len > 0) try std.Io.File.writeStreamingAll(.stdout(), io, result.stdout);
-    if (result.stderr.len > 0) try std.Io.File.writeStreamingAll(.stderr(), io, result.stderr);
-    switch (result.term) {
+    const term = try child.wait(io);
+    switch (term) {
         .exited => |code| if (code != 0) return error.SelfUpdateFailed,
         else => return error.SelfUpdateFailed,
     }

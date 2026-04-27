@@ -18,9 +18,9 @@ download() {
     out="$2"
 
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$url" -o "$out"
+        curl -fL --progress-bar "$url" -o "$out"
     elif command -v wget >/dev/null 2>&1; then
-        wget -qO "$out" "$url"
+        wget -O "$out" "$url"
     else
         echo "missing required command: curl or wget" >&2
         exit 1
