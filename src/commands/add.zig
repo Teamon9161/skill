@@ -14,7 +14,7 @@ pub fn run(ctx: *Context, target: cli.AddTarget) !void {
     const cfg = try config.load(ctx.allocator, ctx.io, ctx.paths.config, ctx.paths.sources);
     defer cfg.deinit(ctx.allocator);
 
-    const input = resolveAlias(target.input, cfg.aliases);
+    const input = resolveAlias(ctx.io, target.input, cfg.aliases);
     const spec = try source_spec.parseAddSpec(ctx.allocator, input, cfg.sources);
     defer spec.deinit(ctx.allocator);
 
@@ -38,10 +38,17 @@ pub fn run(ctx: *Context, target: cli.AddTarget) !void {
     try ctx.save();
 }
 
-fn resolveAlias(input: []const u8, aliases: []const config.Alias) []const u8 {
+fn resolveAlias(io: std.Io, input: []const u8, aliases: []const config.Alias) []const u8 {
     if (std.mem.indexOfAny(u8, input, "/\\") != null) return input;
+    if (localDirExists(io, input)) return input;
     if (config.findAlias(aliases, input)) |alias| return alias.value;
     return input;
+}
+
+fn localDirExists(io: std.Io, name: []const u8) bool {
+    var dir = std.Io.Dir.openDir(.cwd(), io, name, .{}) catch return false;
+    dir.close(io);
+    return true;
 }
 
 fn addRemote(ctx: *Context, spec: source_spec.RemoteSpec, agent_list: []const agents.Agent) !void {
@@ -316,10 +323,12 @@ fn pathTail(path: []const u8) []const u8 {
 
 fn absolutePath(allocator: std.mem.Allocator, io: std.Io, input: []const u8) ![]const u8 {
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const len = if (std.fs.path.isAbsolute(input))
-        try std.Io.Dir.realPathFileAbsolute(io, input, &buf)
+    var dir = if (std.fs.path.isAbsolute(input))
+        try std.Io.Dir.openDirAbsolute(io, input, .{})
     else
-        try std.Io.Dir.realPathFile(.cwd(), io, input, &buf);
+        try std.Io.Dir.openDir(.cwd(), io, input, .{});
+    defer dir.close(io);
+    const len = try dir.realPath(io, &buf);
     return allocator.dupe(u8, buf[0..len]);
 }
 

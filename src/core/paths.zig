@@ -94,7 +94,9 @@ pub fn child(allocator: std.mem.Allocator, parent: []const u8, name: []const u8)
 
 pub fn cwdAlloc(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
     var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const len = try std.Io.Dir.realPath(.cwd(), io, &buf);
+    var dir = try std.Io.Dir.openDir(.cwd(), io, ".", .{});
+    defer dir.close(io);
+    const len = try dir.realPath(io, &buf);
     return allocator.dupe(u8, buf[0..len]);
 }
 

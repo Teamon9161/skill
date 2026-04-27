@@ -1,7 +1,10 @@
 const std = @import("std");
 
 pub fn check(allocator: std.mem.Allocator, io: std.Io) !void {
-    var result = try run(allocator, io, &.{ "git", "--version" }, null);
+    var result = run(allocator, io, &.{ "git", "--version" }, null) catch |err| switch (err) {
+        error.FileNotFound => return error.GitNotFound,
+        else => return err,
+    };
     result.deinit(allocator);
 }
 
