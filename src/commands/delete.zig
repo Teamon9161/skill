@@ -131,8 +131,11 @@ fn deleteRepo(ctx: *Context, repo_path: []const u8) !void {
         try printDeletedLinks(ctx.io, ctx.manifest.skills[i]);
     }
 
-    if (!paths.isInside(ctx.paths.repos, repo_path)) return error.UnsafeDeletePath;
-    try std.Io.Dir.deleteTree(.cwd(), ctx.io, repo_path);
+    // Only managed repos under paths.repos get deleted from disk.
+    // Local sources (e.g. user's working dir) are left untouched.
+    if (paths.isInside(ctx.paths.repos, repo_path)) {
+        try std.Io.Dir.deleteTree(.cwd(), ctx.io, repo_path);
+    }
 
     // remove from manifest highest-index first to preserve earlier indices
     var j = indices.items.len;
@@ -148,7 +151,8 @@ fn chooseRepos(ctx: *Context, repo_paths: []const []const u8) ![]bool {
     @memset(selected, false);
 
     if (repo_paths.len == 1) {
-        selected[0] = try confirmSingleRepo(ctx, repo_paths[0]);
+        const managed = paths.isInside(ctx.paths.repos, repo_paths[0]);
+        selected[0] = try confirmSingleRepo(ctx, repo_paths[0], managed);
         return selected;
     }
 
@@ -184,27 +188,43 @@ fn chooseRepos(ctx: *Context, repo_paths: []const []const u8) ![]bool {
     return selected;
 }
 
-fn confirmSingleRepo(ctx: *Context, repo_path: []const u8) !bool {
+fn confirmSingleRepo(ctx: *Context, repo_path: []const u8, managed: bool) !bool {
     // collect skill names for display
     var first = true;
+    var source: []const u8 = "";
+    var source_label: []const u8 = "";
     for (ctx.manifest.skills) |skill| {
         if (!std.mem.eql(u8, skill.path, repo_path)) continue;
         if (first) {
             try std.Io.File.writeStreamingAll(.stdout(), ctx.io, "Delete ");
+            source = skill.source;
+            source_label = skill.source_label;
         } else {
             try std.Io.File.writeStreamingAll(.stdout(), ctx.io, ", ");
         }
         try std.Io.File.writeStreamingAll(.stdout(), ctx.io, skill.name);
         first = false;
     }
-    try std.Io.File.writeStreamingAll(.stdout(), ctx.io, " and remove repo from disk? [y/N] ");
+    if (source.len > 0) {
+        try std.Io.File.writeStreamingAll(.stdout(), ctx.io, " (");
+        if (std.mem.eql(u8, source_label, "local")) {
+            try std.Io.File.writeStreamingAll(.stdout(), ctx.io, "local: ");
+        }
+        try std.Io.File.writeStreamingAll(.stdout(), ctx.io, source);
+        try std.Io.File.writeStreamingAll(.stdout(), ctx.io, ")");
+    }
+    if (managed) {
+        try std.Io.File.writeStreamingAll(.stdout(), ctx.io, " and remove repo from disk? [Y/n] ");
+    } else {
+        try std.Io.File.writeStreamingAll(.stdout(), ctx.io, " (local source kept on disk)? [Y/n] ");
+    }
 
     var buf: [16]u8 = undefined;
     const answer = io_util.readPromptLine(ctx.io, &buf) catch |err| switch (err) {
-        error.EndOfStream => return false,
+        error.EndOfStream => return true,
         else => return err,
     };
-    if (answer.len == 0) return false;
+    if (answer.len == 0) return true;
     return switch (std.ascii.toLower(answer[0])) {
         'y' => true,
         'n' => false,
@@ -214,12 +234,25 @@ fn confirmSingleRepo(ctx: *Context, repo_path: []const u8) !bool {
 
 fn printRepoSkillNames(io: std.Io, m: manifest.Manifest, repo_path: []const u8) !void {
     var first = true;
+    var source: []const u8 = "";
+    var source_label: []const u8 = "";
     for (m.skills) |skill| {
         if (!std.mem.eql(u8, skill.path, repo_path)) continue;
         if (!first) try std.Io.File.writeStreamingAll(.stdout(), io, ", ");
         try std.Io.File.writeStreamingAll(.stdout(), io, skill.name);
+        if (first) {
+            source = skill.source;
+            source_label = skill.source_label;
+        }
         first = false;
     }
+    if (source.len == 0) return;
+    try std.Io.File.writeStreamingAll(.stdout(), io, "  (");
+    if (std.mem.eql(u8, source_label, "local")) {
+        try std.Io.File.writeStreamingAll(.stdout(), io, "local: ");
+    }
+    try std.Io.File.writeStreamingAll(.stdout(), io, source);
+    try std.Io.File.writeStreamingAll(.stdout(), io, ")");
 }
 
 fn printDeletedLinks(io: std.Io, skill: manifest.Skill) !void {
