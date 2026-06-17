@@ -21,6 +21,11 @@ label = "Codex"
 dir = ".codex"
 skills = "skills"
 
+[agents.hermes]
+label = "Hemes"
+dir = ".hemes"
+skills = "skills"
+
 # Force selected repos to use git/symlink installs even if plugin metadata exists.
 # prefer_git = ["obra/superpowers"]
 
