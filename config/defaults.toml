@@ -22,8 +22,8 @@ dir = ".codex"
 skills = "skills"
 
 [agents.hermes]
-label = "Hemes"
-dir = ".hemes"
+label = "Hermes"
+dir = ".hermes"
 skills = "skills"
 
 # Force selected repos to use git/symlink installs even if plugin metadata exists.
