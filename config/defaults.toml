@@ -13,6 +13,7 @@ urls = [
 label = "Claude Code"
 dir = ".claude"
 skills = "skills"
+agents = "agents"
 plugin = "claude"
 plugin_dir = ".claude-plugin"
 
@@ -24,6 +25,29 @@ skills = "skills"
 [agents.hermes]
 label = "Hermes"
 dir = ".hermes"
+skills = "skills"
+
+[agents.tcode]
+label = "tcode"
+dir = ".tcode"
+skills = "skills"
+agents = "agents"
+
+[agents.cursor]
+label = "Cursor"
+dir = ".cursor"
+skills = "skills"
+
+[agents.pi]
+label = "Pi"
+dir = ".pi"
+skills = "skills"
+
+# Vendor-neutral shared location (the .agents convention). Codex reads user-wide
+# skills from here; other harnesses honoring the convention pick it up too.
+[agents.agents]
+label = "Agents (shared)"
+dir = ".agents"
 skills = "skills"
 
 # Force selected repos to use git/symlink installs even if plugin metadata exists.

@@ -22,6 +22,9 @@ pub const AgentDef = struct {
     skills: []const u8,
     plugin: ?[]const u8 = null,
     plugin_dir: ?[]const u8 = null,
+    // Subdir where this harness reads sub-agents (e.g. "agents" → ~/.claude/agents).
+    // null means the harness has no sub-agent support and none are installed.
+    agents: ?[]const u8 = null,
 
     pub fn deinit(self: AgentDef, allocator: std.mem.Allocator) void {
         allocator.free(self.id);
@@ -30,6 +33,7 @@ pub const AgentDef = struct {
         allocator.free(self.skills);
         if (self.plugin) |p| allocator.free(p);
         if (self.plugin_dir) |d| allocator.free(d);
+        if (self.agents) |a| allocator.free(a);
     }
 };
 
@@ -314,6 +318,10 @@ fn mergeAgents(
         if (agent_table.get("plugin_dir")) |value| {
             if (agent.plugin_dir) |d| allocator.free(d);
             agent.plugin_dir = try allocator.dupe(u8, try expectString(value));
+        }
+        if (agent_table.get("agents")) |value| {
+            if (agent.agents) |a| allocator.free(a);
+            agent.agents = try allocator.dupe(u8, try expectString(value));
         }
     }
 }

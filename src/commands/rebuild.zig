@@ -24,6 +24,16 @@ pub fn run(ctx: *Context) !void {
         try scanAgentLinks(ctx, &cfg, candidate.id, candidate.skills, &new_manifest);
     }
 
+    // Second pass: attach sub-agent links to the skills discovered above. Runs
+    // after the skills scan so the manifest is populated to match against.
+    for (candidate_list) |candidate| {
+        if (!candidate.exists) continue;
+        const sub = candidate.agents orelse continue;
+        const agents_dir = try paths.child(ctx.allocator, candidate.base, sub);
+        defer ctx.allocator.free(agents_dir);
+        try scanSubagentLinks(ctx, candidate.id, agents_dir, &new_manifest);
+    }
+
     const old_count = ctx.manifest.skills.len;
     ctx.manifest.deinit(ctx.allocator);
     ctx.manifest = new_manifest;
@@ -64,6 +74,52 @@ fn scanAgentLinks(
             else => return err,
         };
     }
+}
+
+fn scanSubagentLinks(
+    ctx: *Context,
+    agent_id: []const u8,
+    agents_dir: []const u8,
+    new_manifest: *manifest.Manifest,
+) !void {
+    var dir = std.Io.Dir.openDirAbsolute(ctx.io, agents_dir, .{ .iterate = true }) catch |err| switch (err) {
+        error.FileNotFound, error.NotDir => return,
+        else => return err,
+    };
+    defer dir.close(ctx.io);
+
+    var it = dir.iterate();
+    while (try it.next(ctx.io)) |entry| {
+        const link_path = try paths.child(ctx.allocator, agents_dir, entry.name);
+        defer ctx.allocator.free(link_path);
+
+        var target_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const target_len = std.Io.Dir.readLinkAbsolute(ctx.io, link_path, &target_buf) catch |err| switch (err) {
+            error.FileNotFound, error.NotLink => continue,
+            else => return err,
+        };
+        const target = target_buf[0..target_len];
+
+        if (!paths.isInside(ctx.paths.repos, target)) continue;
+
+        // The sub-agent link shares the skill's name (dir basename); attach it to
+        // the matching skill discovered in the first pass.
+        const skill_index = findSkillForSubagent(new_manifest.*, entry.name) orelse continue;
+
+        const link = try manifest.newLink(ctx.allocator, agent_id, link_path, target);
+        errdefer link.deinit(ctx.allocator);
+        try appendLink(ctx.allocator, &new_manifest.skills[skill_index], link);
+    }
+}
+
+fn findSkillForSubagent(new_manifest: manifest.Manifest, name: []const u8) ?usize {
+    for (new_manifest.skills, 0..) |skill, i| {
+        if (!std.mem.eql(u8, skill.name, name)) continue;
+        for (skill.links) |link| {
+            if (link.kind == .git) return i;
+        }
+    }
+    return null;
 }
 
 fn processLink(

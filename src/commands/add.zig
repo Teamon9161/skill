@@ -139,7 +139,7 @@ fn installRemoteLayouts(
                 .storage_path = repo_path,
                 .branch = branch,
                 .commit = commit,
-            }, layout.target, git_agents.items);
+            }, base_path, layout.target, git_agents.items);
         }
 
         for (plans) |plan| {
@@ -350,7 +350,7 @@ fn addLocal(ctx: *Context, spec: source_spec.LocalSpec, candidate_list: []const 
             .storage_path = abs_path,
             .branch = "",
             .commit = "",
-        }, layout.target, agent_list);
+        }, abs_path, layout.target, agent_list);
     }
 }
 
@@ -369,6 +369,7 @@ const InstallInfo = struct {
 fn installLayout(
     ctx: *Context,
     info: InstallInfo,
+    base_path: []const u8,
     target: []const u8,
     agent_list: []const agents.Agent,
 ) !void {
@@ -382,7 +383,7 @@ fn installLayout(
     );
     const prev_links: []const manifest.Link = if (existing) |i| ctx.manifest.skills[i].links else &.{};
 
-    const created_links = try links.createForAgents(ctx.allocator, ctx.io, agent_list, info.name, target, .{});
+    const created_links = try links.createForAgents(ctx.allocator, ctx.io, agent_list, info.name, base_path, target, .{});
     var created_links_owned = true;
     errdefer {
         if (created_links_owned) {

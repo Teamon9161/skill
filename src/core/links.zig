@@ -13,6 +13,7 @@ pub fn createForAgents(
     io: std.Io,
     agent_list: []const agents.Agent,
     name: []const u8,
+    base_path: []const u8,
     target: []const u8,
     options: CreateOptions,
 ) ![]manifest.Link {
@@ -27,11 +28,81 @@ pub fn createForAgents(
         const link_path = try paths.child(allocator, agent.skills, name);
         defer allocator.free(link_path);
         const created = try ensureLink(allocator, io, agent.id, link_path, target, options);
-        if (!created) continue;
-        try out.append(allocator, try manifest.newLink(allocator, agent.id, link_path, target));
+        if (created) {
+            try out.append(allocator, try manifest.newLink(allocator, agent.id, link_path, target));
+        }
+
+        try createSubagentLink(allocator, io, agent, name, base_path, target, options, &out);
     }
 
     return out.toOwnedSlice(allocator);
+}
+
+// Install a skill's sub-agents for one harness by symlinking a per-skill dir
+// into <base>/<agents>/<name> (Claude scans that dir recursively). The source
+// is resolved with priority: the repo's harness-specific dir (e.g. .claude/agents)
+// first, then the skill's own bundled agents/ subdir.
+fn createSubagentLink(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    agent: agents.Agent,
+    name: []const u8,
+    base_path: []const u8,
+    target: []const u8,
+    options: CreateOptions,
+    out: *std.ArrayList(manifest.Link),
+) !void {
+    const sub = agent.agents orelse return;
+    const src = (try resolveSubagentSrc(allocator, io, base_path, agent.dir, target, sub)) orelse return;
+    defer allocator.free(src);
+
+    const dest_dir = try paths.child(allocator, agent.base, sub);
+    defer allocator.free(dest_dir);
+    try std.Io.Dir.createDirPath(.cwd(), io, dest_dir);
+
+    const link_path = try paths.child(allocator, dest_dir, name);
+    defer allocator.free(link_path);
+    const created = try ensureLink(allocator, io, agent.id, link_path, src, options);
+    if (!created) return;
+    try out.append(allocator, try manifest.newLink(allocator, agent.id, link_path, src));
+}
+
+fn resolveSubagentSrc(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    base_path: []const u8,
+    dir: []const u8,
+    target: []const u8,
+    sub: []const u8,
+) !?[]const u8 {
+    // 1. Harness-specific dir at the repo root, e.g. <repo>/.claude/agents.
+    if (dir.len > 0 and !std.fs.path.isAbsolute(dir)) {
+        const specific = try std.fs.path.join(allocator, &.{ base_path, dir, sub });
+        if (dirExists(io, specific)) return specific;
+        allocator.free(specific);
+    }
+    // 2. The skill's own bundled agents/ subdir.
+    const bundled = try std.fs.path.join(allocator, &.{ target, sub });
+    if (dirExists(io, bundled)) return bundled;
+    allocator.free(bundled);
+    return null;
+}
+
+fn dirExists(io: std.Io, path: []const u8) bool {
+    std.Io.Dir.accessAbsolute(io, path, .{}) catch return false;
+    return true;
+}
+
+// A git link belongs to an agent when its path is under that agent's skills
+// dir or its sub-agents dir.
+pub fn agentOwnsPath(agent: agents.Agent, path: []const u8) bool {
+    if (paths.isInside(agent.skills, path)) return true;
+    if (agent.agents) |sub| {
+        var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const dest = std.fmt.bufPrint(&buf, "{s}{c}{s}", .{ agent.base, std.fs.path.sep, sub }) catch return false;
+        if (paths.isInside(dest, path)) return true;
+    }
+    return false;
 }
 
 pub fn removeRecorded(io: std.Io, recorded: []const manifest.Link) !void {
@@ -208,7 +279,7 @@ fn removeIfMatches(io: std.Io, link_path: []const u8, target: []const u8) !void 
 fn linkBelongsToAnyAgent(link: manifest.Link, agent_list: []const agents.Agent) bool {
     for (agent_list) |agent| {
         if (!std.mem.eql(u8, link.agent, agent.id)) continue;
-        if (paths.isInside(agent.skills, link.path)) return true;
+        if (agentOwnsPath(agent, link.path)) return true;
     }
     return false;
 }

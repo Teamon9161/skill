@@ -31,12 +31,11 @@ pub fn skillLayouts(
         return one;
     }
 
-    const skills_dir = try std.fs.path.join(allocator, &.{ base_path, "skills" });
+    // Prefer a top-level skills/ dir; fall back to the shared .agents/skills/
+    // convention that vendor-neutral skills (e.g. impeccable) ship for Codex,
+    // Pi and other non-Claude harnesses to install from.
+    const skills_dir = (try resolveSkillsDir(allocator, io, base_path)) orelse return error.UnsupportedSkillLayout;
     defer allocator.free(skills_dir);
-    std.Io.Dir.accessAbsolute(io, skills_dir, .{}) catch |err| switch (err) {
-        error.FileNotFound => return error.UnsupportedSkillLayout,
-        else => return err,
-    };
 
     var dir = try std.Io.Dir.openDirAbsolute(io, skills_dir, .{ .iterate = true });
     defer dir.close(io);
@@ -69,6 +68,24 @@ fn singleLayout(allocator: std.mem.Allocator, target: []const u8, name: []const 
         .skill_file = skill_file,
         .target = try allocator.dupe(u8, target),
     };
+}
+
+fn resolveSkillsDir(allocator: std.mem.Allocator, io: std.Io, base_path: []const u8) !?[]const u8 {
+    const candidates = [_][]const []const u8{
+        &.{ base_path, "skills" },
+        &.{ base_path, ".agents", "skills" },
+    };
+    for (candidates) |parts| {
+        const dir = try std.fs.path.join(allocator, parts);
+        if (dirExists(io, dir)) return dir;
+        allocator.free(dir);
+    }
+    return null;
+}
+
+fn dirExists(io: std.Io, path: []const u8) bool {
+    std.Io.Dir.accessAbsolute(io, path, .{}) catch return false;
+    return true;
 }
 
 fn hasSkillFile(io: std.Io, target: []const u8) !bool {

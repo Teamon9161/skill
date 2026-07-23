@@ -137,7 +137,7 @@ fn updateOne(ctx: *Context, cfg: config.Config, index: usize) !void {
     }
 
     if (git_agents.items.len > 0) {
-        const created_links = try links.createForAgents(ctx.allocator, ctx.io, git_agents.items, skill.name, layout.target, .{ .prompt_conflicts = false });
+        const created_links = try links.createForAgents(ctx.allocator, ctx.io, git_agents.items, skill.name, base_path, layout.target, .{ .prompt_conflicts = false });
         try manifest.replaceLinksForAgents(ctx.allocator, skill, git_agents.items, created_links);
         ctx.allocator.free(created_links);
     }

@@ -88,7 +88,7 @@ fn matchesAgentLink(agent_list: []const agents.Agent, link: manifest.Link) bool 
     for (agent_list) |agent| {
         if (!std.mem.eql(u8, agent.id, link.agent)) continue;
         return switch (link.kind) {
-            .git => paths.isInside(agent.skills, link.path),
+            .git => links.agentOwnsPath(agent, link.path),
             .marketplace, .plugin => true,
         };
     }
