@@ -8,7 +8,7 @@ pub fn build(b: *std.Build) void {
     const clap_module = clap.module("clap");
     const toml_dep = b.dependency("toml", .{ .target = target, .optimize = optimize });
     const toml_module = toml_dep.module("toml");
-    const version = b.option([]const u8, "version", "Version string embedded in the binary") orelse "0.1.0";
+    const version = b.option([]const u8, "version", "Version string embedded in the binary") orelse "0.1.12";
 
     const options = b.addOptions();
     options.addOption([]const u8, "version", version);

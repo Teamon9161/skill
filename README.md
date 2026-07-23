@@ -26,11 +26,11 @@ curl -fsSL https://raw.githubusercontent.com/Teamon9161/skill/main/install.sh | 
 Install a specific version:
 
 ```powershell
-$env:SKILL_VERSION = "0.1.7"; irm https://raw.githubusercontent.com/Teamon9161/skill/main/install.ps1 | iex
+$env:SKILL_VERSION = "0.1.12"; irm https://raw.githubusercontent.com/Teamon9161/skill/main/install.ps1 | iex
 ```
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Teamon9161/skill/main/install.sh | SKILL_VERSION=0.1.7 sh
+curl -fsSL https://raw.githubusercontent.com/Teamon9161/skill/main/install.sh | SKILL_VERSION=0.1.12 sh
 ```
 
 ## Usage
