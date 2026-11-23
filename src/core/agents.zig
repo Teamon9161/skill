@@ -165,7 +165,7 @@ fn maybeAdd(
 ) !void {
     if (!filter.matches(def.id)) return;
 
-    const base = try agentBase(allocator, scopeRoot(home, cwd, filter.scope), def.dir);
+    const base = try agentBase(allocator, scopeRoot(home, cwd, filter.scope), scopeDir(def, filter.scope));
     errdefer allocator.free(base);
     std.Io.Dir.accessAbsolute(io, base, .{}) catch |err| switch (err) {
         error.FileNotFound => {
@@ -189,7 +189,7 @@ fn addCandidate(
     def: config.AgentDef,
     scope: Scope,
 ) !void {
-    const base = try agentBase(allocator, scopeRoot(home, cwd, scope), def.dir);
+    const base = try agentBase(allocator, scopeRoot(home, cwd, scope), scopeDir(def, scope));
     errdefer allocator.free(base);
     const exists = blk: {
         std.Io.Dir.accessAbsolute(io, base, .{}) catch |err| switch (err) {
@@ -211,14 +211,31 @@ fn scopeRoot(home: []const u8, cwd: []const u8, scope: Scope) []const u8 {
     };
 }
 
+fn scopeDir(def: config.AgentDef, scope: Scope) []const u8 {
+    return switch (scope) {
+        .global => def.dir,
+        .local => def.local_dir orelse def.dir,
+    };
+}
+
 fn agentBase(allocator: std.mem.Allocator, home: []const u8, dir: []const u8) ![]const u8 {
-    if (std.fs.path.isAbsolute(dir)) return allocator.dupe(u8, dir);
-    return std.fs.path.join(allocator, &.{ home, dir });
+    return joinSubPath(allocator, home, dir);
 }
 
 fn agentSkills(allocator: std.mem.Allocator, base: []const u8, skills: []const u8) ![]const u8 {
-    if (std.fs.path.isAbsolute(skills)) return allocator.dupe(u8, skills);
-    return std.fs.path.join(allocator, &.{ base, skills });
+    return joinSubPath(allocator, base, skills);
+}
+
+fn joinSubPath(allocator: std.mem.Allocator, root: []const u8, sub: []const u8) ![]const u8 {
+    if (std.fs.path.isAbsolute(sub)) return allocator.dupe(u8, sub);
+    var parts: std.ArrayList([]const u8) = .empty;
+    defer parts.deinit(allocator);
+    try parts.append(allocator, root);
+    var it = std.mem.tokenizeAny(u8, sub, "/\\");
+    while (it.next()) |segment| {
+        try parts.append(allocator, segment);
+    }
+    return std.fs.path.join(allocator, parts.items);
 }
 
 pub fn selectInteractive(
@@ -410,4 +427,33 @@ fn printDefaultSelection(io: std.Io, candidate_list: []const Candidate, selected
         any = true;
     }
     if (!any) try std.Io.File.writeStreamingAll(.stdout(), io, " none");
+}
+
+test "scopeDir prefers local_dir for local scope" {
+    const def = config.AgentDef{
+        .id = "antigravity",
+        .label = "Antigravity",
+        .dir = ".gemini/config",
+        .local_dir = ".agents",
+        .skills = "skills",
+    };
+    try std.testing.expectEqualStrings(".gemini/config", scopeDir(def, .global));
+    try std.testing.expectEqualStrings(".agents", scopeDir(def, .local));
+
+    const simple = config.AgentDef{
+        .id = "codex",
+        .label = "Codex",
+        .dir = ".codex",
+        .skills = "skills",
+    };
+    try std.testing.expectEqualStrings(".codex", scopeDir(simple, .global));
+    try std.testing.expectEqualStrings(".codex", scopeDir(simple, .local));
+}
+
+test "joinSubPath normalizes nested relative segments" {
+    const allocator = std.testing.allocator;
+    const sep = std.fs.path.sep_str;
+    const joined = try joinSubPath(allocator, "home", ".gemini/config");
+    defer allocator.free(joined);
+    try std.testing.expectEqualStrings("home" ++ sep ++ ".gemini" ++ sep ++ "config", joined);
 }

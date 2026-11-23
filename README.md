@@ -6,6 +6,7 @@ Default supported agents:
 
 - Claude Code
 - Codex
+- Antigravity
 
 Additional agents and sources can be added through configuration.
 
@@ -196,6 +197,8 @@ urls = [
 [agents.cursor]
 label = "Cursor"
 dir = ".cursor"
+# Optional: override `dir` for `-l/--local` installs when global and workspace paths differ.
+# local_dir = ".agents"
 skills = "skills"
 
 [aliases]
@@ -205,7 +208,7 @@ demo = "@owner/repo/path/to/skill"
 value = "C:/path/to/demo-skill"
 ```
 
-Agent paths are relative to the selected scope unless absolute paths are used. Global scope resolves relative agent directories from the user home. Local scope resolves them from the current working directory.
+Agent paths are relative to the selected scope unless absolute paths are used. Global scope resolves `dir` from the user home. Local scope resolves `local_dir` (falling back to `dir`) from the current working directory. For example, Antigravity defaults to `~/.gemini/config/skills` globally and `<cwd>/.agents/skills` locally.
 
 Sources may use either `url` for one Git remote or `urls` for ordered alternatives. During clone and update, `skill` probes each candidate with `git ls-remote <url> HEAD`, then uses the first address that works for the current network. `timeout` defaults to 8 seconds and is passed to Git's low-speed HTTP timeout.
 

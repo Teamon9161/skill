@@ -19,6 +19,7 @@ pub const AgentDef = struct {
     id: []const u8,
     label: []const u8,
     dir: []const u8,
+    local_dir: ?[]const u8 = null,
     skills: []const u8,
     plugin: ?[]const u8 = null,
     plugin_dir: ?[]const u8 = null,
@@ -30,6 +31,7 @@ pub const AgentDef = struct {
         allocator.free(self.id);
         allocator.free(self.label);
         allocator.free(self.dir);
+        if (self.local_dir) |d| allocator.free(d);
         allocator.free(self.skills);
         if (self.plugin) |p| allocator.free(p);
         if (self.plugin_dir) |d| allocator.free(d);
@@ -307,6 +309,10 @@ fn mergeAgents(
             allocator.free(agent.dir);
             agent.dir = try allocator.dupe(u8, try expectString(value));
         }
+        if (agent_table.get("local_dir")) |value| {
+            if (agent.local_dir) |d| allocator.free(d);
+            agent.local_dir = try allocator.dupe(u8, try expectString(value));
+        }
         if (agent_table.get("skills")) |value| {
             allocator.free(agent.skills);
             agent.skills = try allocator.dupe(u8, try expectString(value));
@@ -508,6 +514,7 @@ test "merge config sources and agents" {
         \\[agents.cursor]
         \\label = "Cursor"
         \\dir = ".cursor"
+        \\local_dir = ".agents"
         \\skills = "skills"
         \\
         \\[aliases]
@@ -526,6 +533,7 @@ test "merge config sources and agents" {
     try std.testing.expectEqualStrings("https://mirror.example/team/repo.git", urls[1]);
     try std.testing.expectEqualStrings("cursor", agent_list.items[0].id);
     try std.testing.expectEqualStrings(".cursor", agent_list.items[0].dir);
+    try std.testing.expectEqualStrings(".agents", agent_list.items[0].local_dir.?);
     try std.testing.expectEqualStrings("@kromahlusenii-ops/ham", findAlias(alias_list.items, "ham").?.value);
     try std.testing.expectEqualStrings("../demo-skill", findAlias(alias_list.items, "local-demo").?.value);
 
@@ -533,4 +541,31 @@ test "merge config sources and agents" {
     try std.testing.expect(prefersGit(cfg, "obra", "superpowers"));
     try std.testing.expect(prefersGit(cfg, "team", "repo"));
     try std.testing.expect(!prefersGit(cfg, "other", "repo"));
+}
+
+test "default config defines antigravity agent" {
+    const allocator = std.testing.allocator;
+    var source_list: std.ArrayList(Source) = .empty;
+    var agent_list: std.ArrayList(AgentDef) = .empty;
+    var alias_list: std.ArrayList(Alias) = .empty;
+    var prefer_git: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (source_list.items) |source| source.deinit(allocator);
+        source_list.deinit(allocator);
+        for (agent_list.items) |agent| agent.deinit(allocator);
+        agent_list.deinit(allocator);
+        for (alias_list.items) |alias| alias.deinit(allocator);
+        alias_list.deinit(allocator);
+        for (prefer_git.items) |item| allocator.free(item);
+        prefer_git.deinit(allocator);
+    }
+
+    try parseTomlSubset(allocator, build_options.default_config, &source_list, &agent_list, &alias_list, &prefer_git);
+
+    const cfg = Config{ .agents = agent_list.items };
+    const agy = findAgent(cfg, "antigravity").?;
+    try std.testing.expectEqualStrings("Antigravity", agy.label);
+    try std.testing.expectEqualStrings(".gemini/config", agy.dir);
+    try std.testing.expectEqualStrings(".agents", agy.local_dir.?);
+    try std.testing.expectEqualStrings("skills", agy.skills);
 }

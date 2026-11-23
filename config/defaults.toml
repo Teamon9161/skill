@@ -43,6 +43,12 @@ label = "Pi"
 dir = ".pi"
 skills = "skills"
 
+[agents.antigravity]
+label = "Antigravity"
+dir = ".gemini/config"
+local_dir = ".agents"
+skills = "skills"
+
 # Vendor-neutral shared location (the .agents convention). Codex reads user-wide
 # skills from here; other harnesses honoring the convention pick it up too.
 [agents.agents]

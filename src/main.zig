@@ -74,6 +74,8 @@ fn printError(io: std.Io, err: anyerror) !void {
 }
 
 test {
+    _ = @import("core/agents.zig");
+    _ = @import("core/config.zig");
     _ = @import("core/source_spec.zig");
     _ = @import("core/paths.zig");
     _ = @import("core/manifest.zig");
